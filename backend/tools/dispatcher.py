@@ -9,7 +9,7 @@ import logging
 from sqlalchemy.orm import Session
 
 from backend.database.schemas import LLMIntent
-from backend.services import ticket_service, service_service, file_service
+from backend.services import ticket_service, service_service, file_service, incident_service
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +30,8 @@ _CATEGORY_MAP = {
 
 # Entities we know how to handle
 _ENTITY_HANDLERS = {
+    "incident": "incident",
+    "incidents": "incident",
     "ticket": "ticket",
     "tickets": "ticket",
     "service": "service",
@@ -92,6 +94,10 @@ async def dispatch(intent: LLMIntent, db: Session) -> dict:
             "pending_action": None,
         }
 
+    # ── INCIDENT operations ──────────────────────────────────────────
+    if entity == "incident":
+        return _handle_incident(op, params, filters, record_id, intent, db)
+
     # ── TICKET operations ────────────────────────────────────────────
     if entity == "ticket":
         return _handle_ticket(op, params, filters, record_id, intent, db)
@@ -118,10 +124,129 @@ async def dispatch(intent: LLMIntent, db: Session) -> dict:
 
 
 # ═════════════════════════════════════════════════════════════════════════
+# INCIDENT handler
+# ═════════════════════════════════════════════════════════════════════════
+def _handle_incident(op, params, filters, record_id, intent, db):
+    if op in ("READ", "SEARCH"):
+        results = incident_service.list_incidents(
+            db,
+            status=filters.get("status"),
+            severity=filters.get("severity") or filters.get("priority"),
+            service=filters.get("service") or filters.get("category") or filters.get("affected_service"),
+            search=filters.get("search") or filters.get("keyword") or filters.get("query"),
+        )
+        count = len(results)
+        filter_parts = []
+        if filters.get("status"):
+            filter_parts.append(filters["status"])
+        if filters.get("severity") or filters.get("priority"):
+            sev = filters.get("severity") or filters.get("priority")
+            filter_parts.append(f"{sev}-severity")
+        if filters.get("service") or filters.get("category"):
+            filter_parts.append(filters.get("service") or filters.get("category"))
+        filter_desc = " ".join(filter_parts) + " " if filter_parts else ""
+
+        if count > 0:
+            reply = f"Found {count} {filter_desc}incident{'s' if count != 1 else ''}."
+        else:
+            reply = f"No {filter_desc}incidents found."
+
+        return {
+            "reply": reply,
+            "data": results,
+            "data_type": "incidents",
+            "requires_confirmation": False,
+            "pending_action": None,
+        }
+
+    if op == "CREATE":
+        if not params.get("title") and not params.get("description"):
+            return {
+                "reply": "To create an incident, please provide a title or issue description, affected service, and severity (critical, high, medium, low).",
+                "data": None,
+                "data_type": None,
+                "requires_confirmation": False,
+                "pending_action": None,
+            }
+        result = incident_service.create_incident(db, params)
+        return {
+            "reply": f"✅ Incident {result['incident_id']} created: \"{result['title']}\" ({result['severity']} severity, {result['affected_service'] or 'General'}).",
+            "data": [result],
+            "data_type": "incidents",
+            "requires_confirmation": False,
+            "pending_action": None,
+        }
+
+    if op == "UPDATE":
+        if not record_id:
+            return {
+                "reply": "Which incident should I update? Please provide the incident ID.",
+                "data": None, "data_type": None,
+                "requires_confirmation": False, "pending_action": None,
+            }
+        result = incident_service.update_incident(db, record_id, params)
+        if result is None:
+            return {
+                "reply": f"❌ Incident #{record_id} not found.",
+                "data": None, "data_type": None,
+                "requires_confirmation": False, "pending_action": None,
+            }
+        return {
+            "reply": f"✅ Incident {result['incident_id']} updated successfully.",
+            "data": [result],
+            "data_type": "incidents",
+            "requires_confirmation": False,
+            "pending_action": None,
+        }
+
+    if op == "DELETE":
+        if not record_id:
+            return {
+                "reply": "Which incident should I delete? Please provide the incident ID.",
+                "data": None, "data_type": None,
+                "requires_confirmation": False, "pending_action": None,
+            }
+        inc = incident_service.get_incident(db, record_id)
+        if inc is None:
+            return {
+                "reply": f"❌ Incident #{record_id} not found.",
+                "data": None, "data_type": None,
+                "requires_confirmation": False, "pending_action": None,
+            }
+        return {
+            "reply": f"⚠️ You are about to delete incident {inc['incident_id']}: \"{inc['title']}\". This action cannot be undone.",
+            "data": [inc],
+            "data_type": "incidents",
+            "requires_confirmation": True,
+            "pending_action": {"operation": "DELETE", "entity": "incident", "record_id": record_id},
+        }
+
+    return {"reply": intent.message or "I'm not sure what to do with that incident request.", "data": None, "data_type": None, "requires_confirmation": False, "pending_action": None}
+
+
+# ═════════════════════════════════════════════════════════════════════════
 # TICKET handler
 # ═════════════════════════════════════════════════════════════════════════
+VALID_CATEGORIES = ("Database", "Network", "Server", "Application", "Security", "Hardware")
+
+
 def _handle_ticket(op, params, filters, record_id, intent, db):
     if op in ("READ", "SEARCH"):
+        # Validate category if provided
+        cat_filter = filters.get("category")
+        if cat_filter:
+            norm_cat = _CATEGORY_MAP.get(cat_filter.lower()) or (cat_filter if cat_filter in VALID_CATEGORIES else None)
+            if not norm_cat:
+                valid_list = ", ".join(VALID_CATEGORIES)
+                return {
+                    "reply": f"'{cat_filter}' is not a valid category. Valid categories are: {valid_list}.",
+                    "data": [],
+                    "data_type": "tickets",
+                    "requires_confirmation": False,
+                    "pending_action": None,
+                }
+            filters["category"] = norm_cat
+
         results = ticket_service.list_tickets(
             db,
             status=filters.get("status"),
@@ -152,7 +277,18 @@ def _handle_ticket(op, params, filters, record_id, intent, db):
 
     if op == "CREATE":
         msg_lower = (intent.message or "").lower()
-        
+
+        # Handle missing information: check if user provided any specifics
+        if not params.get("title") and not params.get("category") and not params.get("description") and not any(kw in msg_lower for kw in ["database", "network", "server", "application", "security", "hardware", "critical", "high", "medium", "low"]):
+            valid_list = ", ".join(VALID_CATEGORIES)
+            return {
+                "reply": f"To create a ticket, please provide details such as the title or issue description, category ({valid_list}), and priority (low, medium, high, critical).",
+                "data": None,
+                "data_type": None,
+                "requires_confirmation": False,
+                "pending_action": None,
+            }
+
         # Infer priority if missing
         if "priority" not in params:
             for prio in ("critical", "high", "medium", "low"):
@@ -166,6 +302,21 @@ def _handle_ticket(op, params, filters, record_id, intent, db):
                 if cat_key in msg_lower:
                     params["category"] = cat_val
                     break
+
+        # Validate category if specified
+        cat = params.get("category")
+        if cat:
+            norm_cat = _CATEGORY_MAP.get(cat.lower()) or (cat if cat in VALID_CATEGORIES else None)
+            if not norm_cat:
+                valid_list = ", ".join(VALID_CATEGORIES)
+                return {
+                    "reply": f"'{cat}' is not a valid category for a ticket. Valid categories are: {valid_list}.",
+                    "data": None,
+                    "data_type": None,
+                    "requires_confirmation": False,
+                    "pending_action": None,
+                }
+            params["category"] = norm_cat
 
         # Infer title if missing
         if not params.get("title"):
@@ -356,7 +507,7 @@ def _handle_file(op, params, filters, record_id, intent, db):
 # READ-ONLY entities (user, sla)
 # ═════════════════════════════════════════════════════════════════════════
 def _handle_readonly(entity, op, filters, db):
-    from backend.database.models import User, SLA
+    from backend.database.models import User, SLA, Service
 
     if op not in ("READ", "SEARCH"):
         return {"reply": f"Currently, {entity} records are read-only.", "data": None, "data_type": None, "requires_confirmation": False, "pending_action": None}
@@ -367,9 +518,33 @@ def _handle_readonly(entity, op, filters, db):
         return {"reply": f"Found {len(results)} user{'s' if len(results) != 1 else ''}.", "data": results, "data_type": "users", "requires_confirmation": False, "pending_action": None}
 
     if entity == "sla":
-        query = db.query(SLA).order_by(SLA.service_id, SLA.priority)
+        query = db.query(SLA).join(Service, SLA.service_id == Service.id, isouter=True)
+        if filters.get("priority"):
+            query = query.filter(SLA.priority.ilike(filters["priority"]))
+        if filters.get("service_id"):
+            try:
+                query = query.filter(SLA.service_id == int(filters["service_id"]))
+            except (ValueError, TypeError):
+                pass
+        if filters.get("service") or filters.get("service_name"):
+            s_name = filters.get("service") or filters.get("service_name")
+            query = query.filter(Service.service_name.ilike(f"%{s_name}%"))
+        query = query.order_by(SLA.service_id, SLA.priority)
         results = [s.to_dict() for s in query.all()]
-        return {"reply": f"Found {len(results)} SLA record{'s' if len(results) != 1 else ''}.", "data": results, "data_type": "sla", "requires_confirmation": False, "pending_action": None}
+        count = len(results)
+        filter_parts = []
+        if filters.get("priority"):
+            filter_parts.append(f"{filters['priority']}-priority")
+        if filters.get("service_name") or filters.get("service"):
+            filter_parts.append(filters.get("service_name") or filters.get("service"))
+        filter_desc = " ".join(filter_parts) + " " if filter_parts else ""
+        return {
+            "reply": f"Found {count} {filter_desc}SLA record{'s' if count != 1 else ''}." if count > 0 else f"No {filter_desc}SLA records found.",
+            "data": results,
+            "data_type": "sla",
+            "requires_confirmation": False,
+            "pending_action": None,
+        }
 
     return {"reply": "I'm not sure how to handle that.", "data": None, "data_type": None, "requires_confirmation": False, "pending_action": None}
 
@@ -379,6 +554,14 @@ async def execute_confirmed_action(action: dict, db: Session) -> dict:
     op = action.get("operation", "").upper()
     entity = action.get("entity", "")
     record_id = action.get("record_id")
+
+    if op == "DELETE" and entity == "incident":
+        success = incident_service.delete_incident(db, record_id)
+        return {
+            "reply": f"✅ Incident #{record_id} has been deleted." if success else f"❌ Incident #{record_id} not found.",
+            "data": None, "data_type": None,
+            "requires_confirmation": False, "pending_action": None,
+        }
 
     if op == "DELETE" and entity == "ticket":
         success = ticket_service.delete_ticket(db, record_id)

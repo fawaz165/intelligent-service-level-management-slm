@@ -10,8 +10,9 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from backend.database.connection import init_db
-from backend.api import chat, tickets, services, files, health
+from backend.database.connection import init_db, SessionLocal
+from backend.database.seed import seed_incidents
+from backend.api import chat, tickets, incidents, services, files, health
 
 # ── Logging ──────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -24,9 +25,14 @@ logger = logging.getLogger(__name__)
 # ── Lifespan ─────────────────────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Startup: create tables. Shutdown: cleanup."""
+    """Startup: create tables and seed if necessary. Shutdown: cleanup."""
     logger.info("Initializing database…")
     init_db()
+    db = SessionLocal()
+    try:
+        seed_incidents(db)
+    finally:
+        db.close()
     logger.info("ISLM backend ready.")
     yield
     logger.info("Shutting down ISLM backend.")
@@ -53,6 +59,7 @@ app.add_middleware(
 app.include_router(health.router)
 app.include_router(chat.router)
 app.include_router(tickets.router)
+app.include_router(incidents.router)
 app.include_router(services.router)
 app.include_router(files.router)
 

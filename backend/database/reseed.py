@@ -10,7 +10,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from backend.database.connection import init_db, SessionLocal
-from backend.database.models import User, Service, Ticket, SLA, File
+from backend.database.models import User, Service, Ticket, SLA, File, Incident
 
 
 def reseed():
@@ -21,6 +21,7 @@ def reseed():
     try:
         # Delete all existing data (order matters for foreign keys)
         deleted_files = db.query(File).delete()
+        deleted_incidents = db.query(Incident).delete()
         deleted_slas = db.query(SLA).delete()
         deleted_tickets = db.query(Ticket).delete()
         deleted_services = db.query(Service).delete()
@@ -28,7 +29,7 @@ def reseed():
         db.commit()
 
         print(f"Cleared old data: {deleted_users} users, {deleted_services} services, "
-              f"{deleted_tickets} tickets, {deleted_slas} SLAs, {deleted_files} files")
+              f"{deleted_tickets} tickets, {deleted_incidents} incidents, {deleted_slas} SLAs, {deleted_files} files")
 
     except Exception as e:
         db.rollback()

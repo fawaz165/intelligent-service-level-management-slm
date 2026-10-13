@@ -14,10 +14,11 @@ import { sendMessageStreaming, sendMessage, uploadFile } from './services/api';
 import './index.css';
 
 const EXAMPLE_QUERIES = [
+  'Show all incidents',
+  'Show open network incidents',
   'Show all open network tickets',
   'Create a high-priority database ticket',
   'Show all services',
-  'List uploaded files',
   'Show SLA records',
 ];
 

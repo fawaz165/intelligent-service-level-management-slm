@@ -13,7 +13,116 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from backend.database.connection import init_db, SessionLocal
-from backend.database.models import User, Service, Ticket, SLA, File
+from backend.database.models import User, Service, Ticket, SLA, File, Incident
+
+
+def seed_incidents(db):
+    """Seed incidents if the table is empty."""
+    if db.query(Incident).count() > 0:
+        return
+
+    incidents = [
+        Incident(
+            incident_id="INC-20260902-001",
+            source="prometheus",
+            title="High CPU usage on database-primary",
+            description="CPU utilization exceeded 95% for 10 minutes. Slow queries identified in slow log.",
+            severity="critical",
+            affected_service="Database-Primary",
+            affected_component="db-node-1",
+            status="open",
+            tags="database, cpu, performance, slow-queries",
+            assigned_to="bob_smith",
+        ),
+        Incident(
+            incident_id="INC-20260902-002",
+            source="api",
+            title="High error rate on API gateway",
+            description="Auth endpoint returning 500 errors. Dependency service timeout detected.",
+            severity="critical",
+            affected_service="API-Gateway",
+            affected_component="api-pod-3",
+            status="acknowledged",
+            tags="api, auth, errors, timeout",
+            assigned_to="eve_martinez",
+        ),
+        Incident(
+            incident_id="INC-20260902-003",
+            source="prometheus",
+            title="Database replication lag detected",
+            description="Replica lagging 5 minutes behind primary. Network latency spike detected.",
+            severity="high",
+            affected_service="Database-Primary",
+            affected_component="db-replica-1",
+            status="open",
+            tags="database, replication, lag, network",
+            assigned_to="grace_chen",
+        ),
+        Incident(
+            incident_id="INC-20260902-004",
+            source="syslog",
+            title="Disk space critical on cache node",
+            description="Cache node running out of disk space. Redis auto-cleanup failing.",
+            severity="high",
+            affected_service="Cache-Layer",
+            affected_component="cache-node-2",
+            status="open",
+            tags="cache, disk, storage, redis",
+            assigned_to="henry_patel",
+        ),
+        Incident(
+            incident_id="INC-20260902-005",
+            source="manual",
+            title="TLS certificate expiring soon",
+            description="API gateway certificate expires in 7 days. Need renewal before expiration.",
+            severity="medium",
+            affected_service="Security-Gateway",
+            affected_component="load-balancer",
+            status="open",
+            tags="certificate, security, tls, renewal",
+            assigned_to="frank_wilson",
+        ),
+        Incident(
+            incident_id="INC-20260902-006",
+            source="prometheus",
+            title="Memory leak detected in worker process",
+            description="Background worker process memory usage growing 50MB per day.",
+            severity="high",
+            affected_service="API-Gateway",
+            affected_component="worker-process-5",
+            status="resolved",
+            mttr_minutes=1590,
+            tags="memory, leak, worker, performance",
+            assigned_to="eve_martinez",
+        ),
+        Incident(
+            incident_id="INC-20260902-007",
+            source="api",
+            title="Packet loss detected between regions",
+            description="2% packet loss between primary and backup data center.",
+            severity="medium",
+            affected_service="Network-Core",
+            affected_component="wan-link",
+            status="open",
+            tags="network, packet-loss, latency, wan",
+            assigned_to="carol_lee",
+        ),
+        Incident(
+            incident_id="INC-20260902-008",
+            source="prometheus",
+            title="Load balancer health check failures",
+            description="3 of 5 load balancer nodes failing health checks.",
+            severity="critical",
+            affected_service="API-Gateway",
+            affected_component="lb-node-2,3,4",
+            status="open",
+            tags="load-balancer, health-check, failover",
+            assigned_to="henry_patel",
+        ),
+    ]
+    db.add_all(incidents)
+    db.commit()
+    print(f"  • {len(incidents)} incidents seeded")
 
 
 def seed():
@@ -22,7 +131,10 @@ def seed():
     db = SessionLocal()
 
     try:
-        # Skip if data already exists
+        # Seed incidents if not already seeded
+        seed_incidents(db)
+
+        # Skip remaining tables if data already exists
         if db.query(User).count() > 0:
             print("Database already seeded — skipping.")
             return

@@ -27,12 +27,55 @@ class ChatResponse(BaseModel):
 class LLMIntent(BaseModel):
     """Structured intent extracted by DeepSeek-R1:1.5B."""
     operation: str = Field(..., description="CREATE | READ | UPDATE | DELETE | SEARCH | FILE_LIST | FILE_SEARCH | FILE_DELETE | GENERAL | UNKNOWN")
-    entity: str = Field(default="", description="ticket | service | user | sla | file")
+    entity: str = Field(default="", description="ticket | incident | service | user | sla | file")
     parameters: Optional[dict] = Field(default=None, description="Fields for CREATE / UPDATE")
     filters: Optional[dict] = Field(default=None, description="Filters for READ / SEARCH")
     record_id: Optional[int] = Field(default=None, description="Record ID for UPDATE / DELETE")
     requires_confirmation: bool = Field(default=False, description="True for destructive operations")
     message: str = Field(default="", description="Natural-language message to user")
+
+
+# ── Incidents ────────────────────────────────────────────────────────────
+class IncidentCreate(BaseModel):
+    incident_id: Optional[str] = None
+    title: str = Field(..., min_length=1, max_length=255)
+    description: Optional[str] = None
+    severity: str = Field(default="medium")
+    affected_service: Optional[str] = None
+    affected_component: Optional[str] = None
+    status: str = Field(default="open")
+    assigned_to: Optional[str] = None
+    tags: Optional[str] = None
+
+
+class IncidentUpdate(BaseModel):
+    title: Optional[str] = None
+    description: Optional[str] = None
+    severity: Optional[str] = None
+    affected_service: Optional[str] = None
+    affected_component: Optional[str] = None
+    status: Optional[str] = None
+    assigned_to: Optional[str] = None
+    tags: Optional[str] = None
+
+
+class IncidentOut(BaseModel):
+    id: int
+    incident_id: str
+    source: Optional[str] = None
+    title: str
+    description: Optional[str] = None
+    severity: str
+    affected_service: Optional[str] = None
+    affected_component: Optional[str] = None
+    status: str
+    assigned_to: Optional[str] = None
+    tags: Optional[str] = None
+    mttr_minutes: Optional[int] = None
+    detected_at: Optional[str] = None
+    acknowledged_at: Optional[str] = None
+    resolved_at: Optional[str] = None
+    created_at: Optional[str] = None
 
 
 # ── Tickets ──────────────────────────────────────────────────────────────

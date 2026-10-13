@@ -24,7 +24,7 @@ def _normalize_category(value: str) -> str:
     lower = value.strip().lower()
     if lower in _VALID_CATEGORIES:
         return _VALID_CATEGORIES[lower]
-    return "Application"  # default
+    return "Application"  # default for creation
 
 
 def _normalize_priority(value: str) -> str:
@@ -50,11 +50,14 @@ def list_tickets(
     query = db.query(Ticket)
 
     if status:
-        query = query.filter(Ticket.status == _normalize_status(status))
+        norm_status = status.strip().lower().replace(" ", "_").replace("-", "_")
+        query = query.filter(Ticket.status == norm_status)
     if category:
-        query = query.filter(Ticket.category == _normalize_category(category))
+        norm_cat = _VALID_CATEGORIES.get(category.strip().lower(), category.strip())
+        query = query.filter(Ticket.category == norm_cat)
     if priority:
-        query = query.filter(Ticket.priority == _normalize_priority(priority))
+        norm_prio = priority.strip().lower()
+        query = query.filter(Ticket.priority == norm_prio)
     if assigned_to:
         query = query.filter(Ticket.assigned_to == int(assigned_to))
     if service_id:

@@ -39,6 +39,14 @@ const COLUMN_CONFIG = {
     { key: 'response_time', label: 'Response Time' },
     { key: 'resolution_time', label: 'Resolution Time' },
   ],
+  incidents: [
+    { key: 'incident_id', label: 'Incident ID' },
+    { key: 'title', label: 'Title', truncate: 35 },
+    { key: 'severity', label: 'Severity', badge: true },
+    { key: 'affected_service', label: 'Affected Service' },
+    { key: 'status', label: 'Status', badge: true },
+    { key: 'assigned_to', label: 'Assigned To' },
+  ],
 };
 
 function truncate(text, max) {
@@ -63,7 +71,7 @@ export default function DataTable({ data, dataType }) {
         </thead>
         <tbody>
           {data.map((row, i) => (
-            <tr key={row.id || i}>
+            <tr key={row.incident_id || row.id || i}>
               {columns.map(col => (
                 <td key={col.key}>
                   {col.badge ? (

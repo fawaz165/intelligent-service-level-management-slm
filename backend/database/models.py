@@ -142,6 +142,60 @@ class Ticket(Base):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# INCIDENTS
+# ═══════════════════════════════════════════════════════════════════════════
+INCIDENT_SEVERITIES = ("critical", "high", "medium", "low")
+INCIDENT_STATUSES = ("open", "acknowledged", "resolved", "closed")
+
+
+class Incident(Base):
+    __tablename__ = "incidents"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    incident_id = Column(String(50), unique=True, nullable=False)
+    source = Column(String(50), nullable=True)
+    title = Column(String(255), nullable=False)
+    description = Column(Text, nullable=True)
+    severity = Column(String(20), nullable=False, default="medium")
+    affected_service = Column(String(100), nullable=True)
+    affected_component = Column(String(100), nullable=True)
+    status = Column(String(20), nullable=False, default="open")
+    detected_at = Column(DateTime, nullable=True)
+    acknowledged_at = Column(DateTime, nullable=True)
+    resolved_at = Column(DateTime, nullable=True)
+    mttr_minutes = Column(Integer, nullable=True)
+    tags = Column(Text, nullable=True)
+    assigned_to = Column(String(50), nullable=True)
+    created_at = Column(DateTime, default=_utcnow)
+
+    __table_args__ = (
+        Index("ix_incidents_status", "status"),
+        Index("ix_incidents_severity", "severity"),
+        Index("ix_incidents_affected_service", "affected_service"),
+    )
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "incident_id": self.incident_id,
+            "source": self.source,
+            "title": self.title,
+            "description": self.description,
+            "severity": self.severity,
+            "affected_service": self.affected_service,
+            "affected_component": self.affected_component,
+            "status": self.status,
+            "assigned_to": self.assigned_to,
+            "tags": self.tags,
+            "mttr_minutes": self.mttr_minutes,
+            "detected_at": self.detected_at.isoformat() if self.detected_at else None,
+            "acknowledged_at": self.acknowledged_at.isoformat() if self.acknowledged_at else None,
+            "resolved_at": self.resolved_at.isoformat() if self.resolved_at else None,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+        }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # SLA
 # ═══════════════════════════════════════════════════════════════════════════
 class SLA(Base):

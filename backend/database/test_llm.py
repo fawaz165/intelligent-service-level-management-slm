@@ -26,6 +26,8 @@ test_queries = [
     "show all open tickets",
     "create a high-priority database ticket",
     "list uploaded files",
+    "Show SLA records",
+    "show users",
 ]
 
 for q in test_queries:
