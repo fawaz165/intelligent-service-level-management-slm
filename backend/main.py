@@ -12,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from backend.database.connection import init_db, SessionLocal
 from backend.database.seed import seed_incidents
-from backend.api import chat, tickets, incidents, services, files, health
+from backend.api import chat, tickets, incidents, services, files, health, sla
 
 # ── Logging ──────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -62,6 +62,7 @@ app.include_router(tickets.router)
 app.include_router(incidents.router)
 app.include_router(services.router)
 app.include_router(files.router)
+app.include_router(sla.router)
 
 
 @app.get("/")

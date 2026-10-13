@@ -209,6 +209,14 @@ def _try_deterministic_parse(user_message: str) -> Optional[LLMIntent]:
         if prio_kw in words:
             detected_priority = prio_val
             break
+    if not detected_priority:
+        prio_match = re.search(r'(?:with|where|having|for)?\s*(?:priority|severity)(?:\s+(?:is|equals|of)|[:=])?\s+([a-zA-Z0-9_-]+)', msg_lower)
+        if prio_match:
+            cand_prio = prio_match.group(1).lower()
+            if cand_prio in _PRIORITIES:
+                detected_priority = _PRIORITIES[cand_prio]
+            elif cand_prio not in ("all", "open", "closed", "ticket", "tickets", "incident", "incidents"):
+                detected_priority = cand_prio
 
     # ── Extract status ───────────────────────────────────────────────
     detected_status = None
@@ -216,6 +224,14 @@ def _try_deterministic_parse(user_message: str) -> Optional[LLMIntent]:
         if status_kw in msg_lower:
             detected_status = status_val
             break
+    if not detected_status:
+        stat_match = re.search(r'(?:with|in|where|having|for)?\s*status(?:\s+(?:is|equals|of)|[:=])?\s+([a-zA-Z0-9_-]+)', msg_lower)
+        if stat_match:
+            cand_stat = stat_match.group(1).lower()
+            if cand_stat in _STATUSES:
+                detected_status = _STATUSES[cand_stat]
+            elif cand_stat not in ("all", "ticket", "tickets", "incident", "incidents", "service", "services"):
+                detected_status = cand_stat
 
     # ── Extract record ID (e.g., "ticket #5", "incident #2") ─────────
     record_id = None
@@ -262,6 +278,11 @@ def _try_deterministic_parse(user_message: str) -> Optional[LLMIntent]:
                     filters["service"] = svc_kw
                     break
 
+        elif entity == "file":
+            uploader_match = re.search(r'uploaded\s+by\s+([a-zA-Z0-9_-]+)', msg_lower)
+            if uploader_match:
+                filters["uploader"] = uploader_match.group(1).capitalize()
+
         # Build descriptive message
         parts = []
         if detected_status:
@@ -292,9 +313,21 @@ def _try_deterministic_parse(user_message: str) -> Optional[LLMIntent]:
             message=msg,
         )
 
+    # ── Extract explicit title for CREATE ────────────────────────────
+    extracted_title = None
+    title_match = re.search(r'(?:called|named|titled|with title)\s+["\']?([^"\']+)["\']?', user_message, re.IGNORECASE)
+    if title_match:
+        extracted_title = title_match.group(1).strip()
+    else:
+        quote_match = re.search(r'["\']([^"\']{3,})["\']', user_message)
+        if quote_match:
+            extracted_title = quote_match.group(1).strip()
+
     # CREATE operations
     if is_create and entity == "incident":
         params = {}
+        if extracted_title:
+            params["title"] = extracted_title
         if detected_category:
             params["affected_service"] = detected_category
         if detected_priority:
@@ -308,6 +341,8 @@ def _try_deterministic_parse(user_message: str) -> Optional[LLMIntent]:
 
     if is_create and entity == "ticket":
         params = {}
+        if extracted_title:
+            params["title"] = extracted_title
         if detected_category:
             params["category"] = detected_category
         if detected_priority:
@@ -321,6 +356,13 @@ def _try_deterministic_parse(user_message: str) -> Optional[LLMIntent]:
         )
 
     if is_create and entity == "service":
+        if extracted_title:
+            return LLMIntent(
+                operation="CREATE",
+                entity="service",
+                parameters={"service_name": extracted_title},
+                message=f"Creating service '{extracted_title}'.",
+            )
         return None
 
     # DELETE operations

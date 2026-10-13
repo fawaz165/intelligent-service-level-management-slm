@@ -37,16 +37,33 @@ def _normalize_status(value: str) -> str:
     return lower if lower in _VALID_STATUSES else "open"
 
 
+def check_duplicate_ticket(db: Session, title: str, category: Optional[str] = None) -> Optional[dict]:
+    """Check if an active (open or in_progress) ticket with the same title already exists."""
+    if not title or not title.strip():
+        return None
+    query = db.query(Ticket).filter(
+        Ticket.title.ilike(title.strip()),
+        Ticket.status.in_(["open", "in_progress"]),
+    )
+    if category:
+        norm_cat = _VALID_CATEGORIES.get(category.strip().lower(), category.strip())
+        query = query.filter(Ticket.category == norm_cat)
+    existing = query.first()
+    return existing.to_dict() if existing else None
+
+
 def list_tickets(
     db: Session,
     status: Optional[str] = None,
     category: Optional[str] = None,
     priority: Optional[str] = None,
     search: Optional[str] = None,
-    assigned_to: Optional[int] = None,
-    service_id: Optional[int] = None,
+    assigned_to: Optional[object] = None,
+    service_id: Optional[object] = None,
 ) -> list[dict]:
     """Retrieve tickets with optional filters — parameterized queries throughout."""
+    from backend.database.models import User, Service
+
     query = db.query(Ticket)
 
     if status:
@@ -58,10 +75,22 @@ def list_tickets(
     if priority:
         norm_prio = priority.strip().lower()
         query = query.filter(Ticket.priority == norm_prio)
-    if assigned_to:
-        query = query.filter(Ticket.assigned_to == int(assigned_to))
-    if service_id:
-        query = query.filter(Ticket.service_id == int(service_id))
+    if assigned_to is not None and str(assigned_to).strip():
+        val = str(assigned_to).strip()
+        if val.isdigit():
+            query = query.filter(Ticket.assigned_to == int(val))
+        else:
+            query = query.join(User, Ticket.assigned_to == User.id, isouter=True).filter(
+                or_(User.name.ilike(f"%{val}%"), User.username.ilike(f"%{val}%"))
+            )
+    if service_id is not None and str(service_id).strip():
+        val = str(service_id).strip()
+        if val.isdigit():
+            query = query.filter(Ticket.service_id == int(val))
+        else:
+            query = query.join(Service, Ticket.service_id == Service.id, isouter=True).filter(
+                Service.service_name.ilike(f"%{val}%")
+            )
     if search:
         pattern = f"%{search}%"
         query = query.filter(
@@ -81,12 +110,22 @@ def get_ticket(db: Session, ticket_id: int) -> Optional[dict]:
     return ticket.to_dict() if ticket else None
 
 
-def create_ticket(db: Session, data: dict) -> dict:
-    """Create a new ticket from validated parameters."""
+def create_ticket(db: Session, data: dict, allow_duplicate: bool = False) -> dict:
+    """Create a new ticket from validated parameters, checking for duplicates."""
+    title = data.get("title", "Untitled Ticket")
+    category = _normalize_category(data.get("category", "Application"))
+
+    if not allow_duplicate:
+        dup = check_duplicate_ticket(db, title, category)
+        if dup:
+            logger.info("Found existing active duplicate ticket #%d '%s'", dup["id"], dup["title"])
+            dup["is_duplicate"] = True
+            return dup
+
     ticket = Ticket(
-        title=data.get("title", "Untitled Ticket"),
+        title=title,
         description=data.get("description"),
-        category=_normalize_category(data.get("category", "Application")),
+        category=category,
         priority=_normalize_priority(data.get("priority", "medium")),
         status=_normalize_status(data.get("status", "open")),
         assigned_to=data.get("assigned_to"),
@@ -96,7 +135,9 @@ def create_ticket(db: Session, data: dict) -> dict:
     db.commit()
     db.refresh(ticket)
     logger.info("Created ticket #%d: %s", ticket.id, ticket.title)
-    return ticket.to_dict()
+    res = ticket.to_dict()
+    res["is_duplicate"] = False
+    return res
 
 
 def update_ticket(db: Session, ticket_id: int, data: dict) -> Optional[dict]:

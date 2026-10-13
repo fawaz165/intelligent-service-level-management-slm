@@ -33,8 +33,15 @@ def get_ticket(ticket_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("", status_code=201)
-def create_ticket(data: TicketCreate, db: Session = Depends(get_db)):
-    return ticket_service.create_ticket(db, data.model_dump())
+def create_ticket(data: TicketCreate, allow_duplicate: bool = False, db: Session = Depends(get_db)):
+    if not allow_duplicate:
+        dup = ticket_service.check_duplicate_ticket(db, data.title, data.category)
+        if dup:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Active ticket #{dup['id']} with title '{dup['title']}' already exists.",
+            )
+    return ticket_service.create_ticket(db, data.model_dump(), allow_duplicate=True)
 
 
 @router.put("/{ticket_id}")

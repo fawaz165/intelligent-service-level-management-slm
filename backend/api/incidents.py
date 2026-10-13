@@ -33,8 +33,15 @@ def get_incident(incident_id: str, db: Session = Depends(get_db)):
 
 
 @router.post("", status_code=201)
-def create_incident(data: IncidentCreate, db: Session = Depends(get_db)):
-    return incident_service.create_incident(db, data.model_dump())
+def create_incident(data: IncidentCreate, allow_duplicate: bool = False, db: Session = Depends(get_db)):
+    if not allow_duplicate:
+        dup = incident_service.check_duplicate_incident(db, data.title)
+        if dup:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Active incident '{dup['incident_id']}' with title '{dup['title']}' already exists.",
+            )
+    return incident_service.create_incident(db, data.model_dump(), allow_duplicate=True)
 
 
 @router.put("/{incident_id}")

@@ -30,8 +30,12 @@ def list_files(
     db: Session,
     file_type: Optional[str] = None,
     search: Optional[str] = None,
+    uploaded_by: Optional[int] = None,
+    uploader_name: Optional[str] = None,
 ) -> list[dict]:
-    """List file metadata with optional type and name filters."""
+    """List file metadata with optional type, name, and uploader filters."""
+    from backend.database.models import User
+
     query = db.query(File)
 
     if file_type:
@@ -41,6 +45,13 @@ def list_files(
         query = query.filter(File.file_type == ft)
     if search:
         query = query.filter(File.file_name.ilike(f"%{search}%"))
+    if uploaded_by:
+        query = query.filter(File.uploaded_by == int(uploaded_by))
+    if uploader_name:
+        u_str = uploader_name.strip()
+        query = query.join(User, File.uploaded_by == User.id, isouter=True).filter(
+            User.name.ilike(f"%{u_str}%") | User.username.ilike(f"%{u_str}%")
+        )
 
     query = query.order_by(File.created_at.desc())
     return [f.to_dict() for f in query.all()]

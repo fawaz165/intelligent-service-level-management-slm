@@ -18,6 +18,17 @@ def _normalize_status(value: str) -> str:
     return lower if lower in _VALID_STATUSES else "active"
 
 
+def check_duplicate_service(db: Session, service_name: str) -> Optional[dict]:
+    """Check if an active service with the same name already exists."""
+    if not service_name or not service_name.strip():
+        return None
+    existing = db.query(Service).filter(
+        Service.service_name.ilike(service_name.strip()),
+        Service.status.in_(["active", "maintenance"]),
+    ).first()
+    return existing.to_dict() if existing else None
+
+
 def list_services(
     db: Session,
     status: Optional[str] = None,
@@ -27,7 +38,8 @@ def list_services(
     query = db.query(Service)
 
     if status:
-        query = query.filter(Service.status == _normalize_status(status))
+        norm_status = status.strip().lower()
+        query = query.filter(Service.status == norm_status)
     if search:
         pattern = f"%{search}%"
         query = query.filter(
@@ -43,9 +55,18 @@ def get_service(db: Session, service_id: int) -> Optional[dict]:
     return svc.to_dict() if svc else None
 
 
-def create_service(db: Session, data: dict) -> dict:
+def create_service(db: Session, data: dict, allow_duplicate: bool = False) -> dict:
+    name = data.get("service_name", "Unnamed Service")
+
+    if not allow_duplicate:
+        dup = check_duplicate_service(db, name)
+        if dup:
+            logger.info("Found existing duplicate service #%d '%s'", dup["id"], dup["service_name"])
+            dup["is_duplicate"] = True
+            return dup
+
     svc = Service(
-        service_name=data.get("service_name", "Unnamed Service"),
+        service_name=name,
         description=data.get("description"),
         status=_normalize_status(data.get("status", "active")),
         owner=data.get("owner"),
@@ -54,7 +75,9 @@ def create_service(db: Session, data: dict) -> dict:
     db.commit()
     db.refresh(svc)
     logger.info("Created service #%d: %s", svc.id, svc.service_name)
-    return svc.to_dict()
+    res = svc.to_dict()
+    res["is_duplicate"] = False
+    return res
 
 
 def update_service(db: Session, service_id: int, data: dict) -> Optional[dict]:

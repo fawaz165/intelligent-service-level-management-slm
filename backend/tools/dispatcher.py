@@ -8,10 +8,22 @@ The dispatcher never touches the database directly.
 import logging
 from sqlalchemy.orm import Session
 
+from backend.config import settings
 from backend.database.schemas import LLMIntent
 from backend.services import ticket_service, service_service, file_service, incident_service
 
 logger = logging.getLogger(__name__)
+
+# Validation constants
+VALID_TICKET_CATEGORIES = ("Database", "Network", "Server", "Application", "Security", "Hardware")
+VALID_TICKET_STATUSES = ("open", "in_progress", "resolved", "closed")
+VALID_TICKET_PRIORITIES = ("low", "medium", "high", "critical")
+
+VALID_INCIDENT_STATUSES = ("open", "acknowledged", "resolved", "closed")
+VALID_INCIDENT_SEVERITIES = ("critical", "high", "medium", "low")
+
+VALID_SERVICE_STATUSES = ("active", "inactive", "maintenance", "deprecated")
+VALID_SLA_PRIORITIES = ("critical", "high", "medium", "low")
 
 # Category names mapped to ticket category titles
 _CATEGORY_MAP = {
@@ -128,10 +140,40 @@ async def dispatch(intent: LLMIntent, db: Session) -> dict:
 # ═════════════════════════════════════════════════════════════════════════
 def _handle_incident(op, params, filters, record_id, intent, db):
     if op in ("READ", "SEARCH"):
+        # Validate status if provided
+        status_filter = filters.get("status")
+        if status_filter:
+            norm_status = status_filter.strip().lower().replace(" ", "_").replace("-", "_")
+            if norm_status not in VALID_INCIDENT_STATUSES:
+                valid_list = ", ".join(VALID_INCIDENT_STATUSES)
+                return {
+                    "reply": f"'{status_filter}' is not a valid incident status. Valid statuses are: {valid_list}.",
+                    "data": [],
+                    "data_type": "incidents",
+                    "requires_confirmation": False,
+                    "pending_action": None,
+                }
+            filters["status"] = norm_status
+
+        # Validate severity if provided
+        sev_filter = filters.get("severity") or filters.get("priority")
+        if sev_filter:
+            norm_sev = sev_filter.strip().lower()
+            if norm_sev not in VALID_INCIDENT_SEVERITIES:
+                valid_list = ", ".join(VALID_INCIDENT_SEVERITIES)
+                return {
+                    "reply": f"'{sev_filter}' is not a valid incident severity. Valid severities are: {valid_list}.",
+                    "data": [],
+                    "data_type": "incidents",
+                    "requires_confirmation": False,
+                    "pending_action": None,
+                }
+            filters["severity"] = norm_sev
+
         results = incident_service.list_incidents(
             db,
             status=filters.get("status"),
-            severity=filters.get("severity") or filters.get("priority"),
+            severity=filters.get("severity"),
             service=filters.get("service") or filters.get("category") or filters.get("affected_service"),
             search=filters.get("search") or filters.get("keyword") or filters.get("query"),
         )
@@ -139,9 +181,8 @@ def _handle_incident(op, params, filters, record_id, intent, db):
         filter_parts = []
         if filters.get("status"):
             filter_parts.append(filters["status"])
-        if filters.get("severity") or filters.get("priority"):
-            sev = filters.get("severity") or filters.get("priority")
-            filter_parts.append(f"{sev}-severity")
+        if filters.get("severity"):
+            filter_parts.append(f"{filters['severity']}-severity")
         if filters.get("service") or filters.get("category"):
             filter_parts.append(filters.get("service") or filters.get("category"))
         filter_desc = " ".join(filter_parts) + " " if filter_parts else ""
@@ -149,7 +190,7 @@ def _handle_incident(op, params, filters, record_id, intent, db):
         if count > 0:
             reply = f"Found {count} {filter_desc}incident{'s' if count != 1 else ''}."
         else:
-            reply = f"No {filter_desc}incidents found."
+            reply = f"No {filter_desc}incidents found matching your criteria." if filter_desc else "No incidents currently exist in the database."
 
         return {
             "reply": reply,
@@ -168,6 +209,19 @@ def _handle_incident(op, params, filters, record_id, intent, db):
                 "requires_confirmation": False,
                 "pending_action": None,
             }
+
+        # Check for duplicate incident
+        if params.get("title"):
+            dup = incident_service.check_duplicate_incident(db, params["title"])
+            if dup:
+                return {
+                    "reply": f"⚠️ An active incident with this title already exists: Incident {dup['incident_id']} — \"{dup['title']}\" ({dup['status']}, {dup['severity']} severity). Creation was skipped to prevent duplicate records.",
+                    "data": [dup],
+                    "data_type": "incidents",
+                    "requires_confirmation": False,
+                    "pending_action": None,
+                }
+
         result = incident_service.create_incident(db, params)
         return {
             "reply": f"✅ Incident {result['incident_id']} created: \"{result['title']}\" ({result['severity']} severity, {result['affected_service'] or 'General'}).",
@@ -227,17 +281,14 @@ def _handle_incident(op, params, filters, record_id, intent, db):
 # ═════════════════════════════════════════════════════════════════════════
 # TICKET handler
 # ═════════════════════════════════════════════════════════════════════════
-VALID_CATEGORIES = ("Database", "Network", "Server", "Application", "Security", "Hardware")
-
-
 def _handle_ticket(op, params, filters, record_id, intent, db):
     if op in ("READ", "SEARCH"):
         # Validate category if provided
         cat_filter = filters.get("category")
         if cat_filter:
-            norm_cat = _CATEGORY_MAP.get(cat_filter.lower()) or (cat_filter if cat_filter in VALID_CATEGORIES else None)
+            norm_cat = _CATEGORY_MAP.get(cat_filter.lower()) or (cat_filter if cat_filter in VALID_TICKET_CATEGORIES else None)
             if not norm_cat:
-                valid_list = ", ".join(VALID_CATEGORIES)
+                valid_list = ", ".join(VALID_TICKET_CATEGORIES)
                 return {
                     "reply": f"'{cat_filter}' is not a valid category. Valid categories are: {valid_list}.",
                     "data": [],
@@ -246,6 +297,36 @@ def _handle_ticket(op, params, filters, record_id, intent, db):
                     "pending_action": None,
                 }
             filters["category"] = norm_cat
+
+        # Validate status if provided
+        status_filter = filters.get("status")
+        if status_filter:
+            norm_status = status_filter.strip().lower().replace(" ", "_").replace("-", "_")
+            if norm_status not in VALID_TICKET_STATUSES:
+                valid_list = ", ".join(VALID_TICKET_STATUSES)
+                return {
+                    "reply": f"'{status_filter}' is not a valid ticket status. Valid statuses are: {valid_list}.",
+                    "data": [],
+                    "data_type": "tickets",
+                    "requires_confirmation": False,
+                    "pending_action": None,
+                }
+            filters["status"] = norm_status
+
+        # Validate priority if provided
+        prio_filter = filters.get("priority")
+        if prio_filter:
+            norm_prio = prio_filter.strip().lower()
+            if norm_prio not in VALID_TICKET_PRIORITIES:
+                valid_list = ", ".join(VALID_TICKET_PRIORITIES)
+                return {
+                    "reply": f"'{prio_filter}' is not a valid ticket priority. Valid priorities are: {valid_list}.",
+                    "data": [],
+                    "data_type": "tickets",
+                    "requires_confirmation": False,
+                    "pending_action": None,
+                }
+            filters["priority"] = norm_prio
 
         results = ticket_service.list_tickets(
             db,
@@ -267,8 +348,13 @@ def _handle_ticket(op, params, filters, record_id, intent, db):
             filter_parts.append(f"{filters['priority']}-priority")
         filter_desc = " ".join(filter_parts) + " " if filter_parts else ""
 
+        if count > 0:
+            reply = f"Found {count} {filter_desc}ticket{'s' if count != 1 else ''}."
+        else:
+            reply = f"No {filter_desc}tickets found matching your criteria." if filter_desc else "No tickets currently exist in the database."
+
         return {
-            "reply": f"Found {count} {filter_desc}ticket{'s' if count != 1 else ''}." if count > 0 else f"No {filter_desc}tickets found.",
+            "reply": reply,
             "data": results,
             "data_type": "tickets",
             "requires_confirmation": False,
@@ -280,7 +366,7 @@ def _handle_ticket(op, params, filters, record_id, intent, db):
 
         # Handle missing information: check if user provided any specifics
         if not params.get("title") and not params.get("category") and not params.get("description") and not any(kw in msg_lower for kw in ["database", "network", "server", "application", "security", "hardware", "critical", "high", "medium", "low"]):
-            valid_list = ", ".join(VALID_CATEGORIES)
+            valid_list = ", ".join(VALID_TICKET_CATEGORIES)
             return {
                 "reply": f"To create a ticket, please provide details such as the title or issue description, category ({valid_list}), and priority (low, medium, high, critical).",
                 "data": None,
@@ -306,9 +392,9 @@ def _handle_ticket(op, params, filters, record_id, intent, db):
         # Validate category if specified
         cat = params.get("category")
         if cat:
-            norm_cat = _CATEGORY_MAP.get(cat.lower()) or (cat if cat in VALID_CATEGORIES else None)
+            norm_cat = _CATEGORY_MAP.get(cat.lower()) or (cat if cat in VALID_TICKET_CATEGORIES else None)
             if not norm_cat:
-                valid_list = ", ".join(VALID_CATEGORIES)
+                valid_list = ", ".join(VALID_TICKET_CATEGORIES)
                 return {
                     "reply": f"'{cat}' is not a valid category for a ticket. Valid categories are: {valid_list}.",
                     "data": None,
@@ -327,6 +413,18 @@ def _handle_ticket(op, params, filters, record_id, intent, db):
                 params["title"] = " ".join(title_parts)
             else:
                 params["title"] = intent.message or "New Ticket"
+
+        # Check for duplicate active ticket
+        if params.get("title"):
+            dup = ticket_service.check_duplicate_ticket(db, params["title"], params.get("category"))
+            if dup:
+                return {
+                    "reply": f"⚠️ An active ticket with this title already exists: Ticket #{dup['id']} — \"{dup['title']}\" ({dup['status']}, {dup['priority']} priority, {dup['category']}). Creation was skipped to prevent duplicate records.",
+                    "data": [dup],
+                    "data_type": "tickets",
+                    "requires_confirmation": False,
+                    "pending_action": None,
+                }
 
         result = ticket_service.create_ticket(db, params)
         return {
@@ -390,13 +488,34 @@ def _handle_ticket(op, params, filters, record_id, intent, db):
 # ═════════════════════════════════════════════════════════════════════════
 def _handle_service(op, params, filters, record_id, intent, db):
     if op in ("READ", "SEARCH"):
+        status_filter = filters.get("status")
+        if status_filter:
+            norm_status = status_filter.strip().lower()
+            if norm_status not in VALID_SERVICE_STATUSES:
+                valid_list = ", ".join(VALID_SERVICE_STATUSES)
+                return {
+                    "reply": f"'{status_filter}' is not a valid service status. Valid statuses are: {valid_list}.",
+                    "data": [],
+                    "data_type": "services",
+                    "requires_confirmation": False,
+                    "pending_action": None,
+                }
+            filters["status"] = norm_status
+
         results = service_service.list_services(
             db,
             status=filters.get("status"),
             search=filters.get("search") or filters.get("keyword"),
         )
+        count = len(results)
+        if count > 0:
+            status_desc = f"{filters.get('status')} " if filters.get("status") else ""
+            reply = f"Found {count} {status_desc}service{'s' if count != 1 else ''}."
+        else:
+            reply = "No services found matching your criteria." if filters else "No services currently exist in the database."
+
         return {
-            "reply": f"Found {len(results)} service{'s' if len(results) != 1 else ''}.",
+            "reply": reply,
             "data": results,
             "data_type": "services",
             "requires_confirmation": False,
@@ -410,6 +529,18 @@ def _handle_service(op, params, filters, record_id, intent, db):
                 "data": None, "data_type": None,
                 "requires_confirmation": False, "pending_action": None,
             }
+
+        # Check for duplicate service
+        dup = service_service.check_duplicate_service(db, params["service_name"])
+        if dup:
+            return {
+                "reply": f"⚠️ An active service with this name already exists: Service #{dup['id']} — \"{dup['service_name']}\" ({dup['status']}). Creation was skipped to prevent duplicate records.",
+                "data": [dup],
+                "data_type": "services",
+                "requires_confirmation": False,
+                "pending_action": None,
+            }
+
         result = service_service.create_service(db, params)
         return {
             "reply": f"✅ Service #{result['id']} created: \"{result['service_name']}\".",
@@ -455,13 +586,37 @@ def _handle_service(op, params, filters, record_id, intent, db):
 # ═════════════════════════════════════════════════════════════════════════
 def _handle_file(op, params, filters, record_id, intent, db):
     if op in ("FILE_LIST", "READ", "SEARCH", "FILE_SEARCH"):
+        ft = filters.get("file_type") or filters.get("type") or params.get("file_type")
+        if ft:
+            norm_ft = ft.strip().lower()
+            if not norm_ft.startswith("."):
+                norm_ft = f".{norm_ft}"
+            if norm_ft not in settings.ALLOWED_FILE_TYPES:
+                allowed_str = ", ".join(sorted(settings.ALLOWED_FILE_TYPES))
+                return {
+                    "reply": f"'{ft}' is not a supported file type. Supported types are: {allowed_str}.",
+                    "data": [],
+                    "data_type": "files",
+                    "requires_confirmation": False,
+                    "pending_action": None,
+                }
+            ft = norm_ft
+
+        uploader = filters.get("uploader") or filters.get("uploaded_by") or filters.get("user")
         results = file_service.list_files(
             db,
-            file_type=filters.get("file_type") or filters.get("type") or params.get("file_type"),
+            file_type=ft,
             search=filters.get("search") or filters.get("file_name") or filters.get("keyword"),
+            uploader_name=uploader,
         )
+        count = len(results)
+        if count > 0:
+            reply = f"Found {count} file{'s' if count != 1 else ''}."
+        else:
+            reply = "No files found matching your criteria." if (ft or uploader or filters.get("search")) else "No files currently exist in the database."
+
         return {
-            "reply": f"Found {len(results)} file{'s' if len(results) != 1 else ''}.",
+            "reply": reply,
             "data": results,
             "data_type": "files",
             "requires_confirmation": False,
@@ -515,9 +670,26 @@ def _handle_readonly(entity, op, filters, db):
     if entity == "user":
         query = db.query(User).order_by(User.name)
         results = [u.to_dict() for u in query.all()]
-        return {"reply": f"Found {len(results)} user{'s' if len(results) != 1 else ''}.", "data": results, "data_type": "users", "requires_confirmation": False, "pending_action": None}
+        count = len(results)
+        reply = f"Found {count} user{'s' if count != 1 else ''}." if count > 0 else "No user records exist in the database."
+        return {"reply": reply, "data": results, "data_type": "users", "requires_confirmation": False, "pending_action": None}
 
     if entity == "sla":
+        # Validate priority if provided
+        prio = filters.get("priority")
+        if prio:
+            norm_prio = prio.strip().lower()
+            if norm_prio not in VALID_SLA_PRIORITIES:
+                valid_list = ", ".join(VALID_SLA_PRIORITIES)
+                return {
+                    "reply": f"'{prio}' is not a valid SLA priority. Valid priorities are: {valid_list}.",
+                    "data": [],
+                    "data_type": "sla",
+                    "requires_confirmation": False,
+                    "pending_action": None,
+                }
+            filters["priority"] = norm_prio
+
         query = db.query(SLA).join(Service, SLA.service_id == Service.id, isouter=True)
         if filters.get("priority"):
             query = query.filter(SLA.priority.ilike(filters["priority"]))
@@ -538,8 +710,14 @@ def _handle_readonly(entity, op, filters, db):
         if filters.get("service_name") or filters.get("service"):
             filter_parts.append(filters.get("service_name") or filters.get("service"))
         filter_desc = " ".join(filter_parts) + " " if filter_parts else ""
+
+        if count > 0:
+            reply = f"Found {count} {filter_desc}SLA record{'s' if count != 1 else ''}."
+        else:
+            reply = f"No {filter_desc}SLA records found matching your criteria." if filter_desc else "No SLA records currently exist in the database."
+
         return {
-            "reply": f"Found {count} {filter_desc}SLA record{'s' if count != 1 else ''}." if count > 0 else f"No {filter_desc}SLA records found.",
+            "reply": reply,
             "data": results,
             "data_type": "sla",
             "requires_confirmation": False,
