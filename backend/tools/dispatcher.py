@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from backend.config import settings
 from backend.database.schemas import LLMIntent
-from backend.services import ticket_service, service_service, file_service, incident_service
+from backend.services import ticket_service, service_service, file_service, incident_service, sla_service
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +57,18 @@ _ENTITY_HANDLERS = {
     "sla record": "sla",
     "sla records": "sla",
     "sla_records": "sla",
+    "sla_risk": "sla_risk",
+    "sla_risks": "sla_risk",
+    "sla risk": "sla_risk",
+    "sla risks": "sla_risk",
+    "sla breach": "sla_risk",
+    "sla breaches": "sla_risk",
+    "sla_breach": "sla_risk",
+    "sla_breaches": "sla_risk",
+    "breach": "sla_risk",
+    "breaches": "sla_risk",
+    "risk": "sla_risk",
+    "risks": "sla_risk",
     **{cat: "ticket" for cat in _CATEGORY_MAP},
 }
 
@@ -121,6 +133,10 @@ async def dispatch(intent: LLMIntent, db: Session) -> dict:
     # ── FILE operations ──────────────────────────────────────────────
     if entity == "file":
         return _handle_file(op, params, filters, record_id, intent, db)
+
+    # ── SLA RISK operations ──────────────────────────────────────────
+    if entity == "sla_risk":
+        return await _handle_sla_risk(op, params, filters, intent, db)
 
     # ── USER / SLA — read-only for now ───────────────────────────────
     if entity in ("user", "sla"):
@@ -725,6 +741,56 @@ def _handle_readonly(entity, op, filters, db):
         }
 
     return {"reply": "I'm not sure how to handle that.", "data": None, "data_type": None, "requires_confirmation": False, "pending_action": None}
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# SLA RISK handler
+# ═════════════════════════════════════════════════════════════════════════
+async def _handle_sla_risk(op, params, filters, intent, db):
+    risk_level = filters.get("risk_level") or filters.get("priority")
+    entity_filter = filters.get("entity")
+    service_filter = filters.get("service")
+    breached_only = bool(filters.get("breached_only") or "breach" in (intent.message or "").lower())
+
+    risks = sla_service.get_all_sla_risks(
+        db,
+        risk_filter=risk_level,
+        entity_filter=entity_filter,
+        service_filter=service_filter,
+        breached_only=breached_only,
+    )
+
+    # If user explicitly requested prediction / AI analysis, enrich top items with DeepSeek-R1
+    if filters.get("with_ai") or any(w in (intent.message or "").lower() for w in ["predict", "prediction", "ai", "recommend"]):
+        enriched = []
+        for r in risks[:3]:
+            r_copy = dict(r)
+            r_enriched = await sla_service.enrich_with_ai_prediction(r_copy)
+            enriched.append(r_enriched)
+        risks = enriched + risks[3:]
+
+    count = len(risks)
+    breached_cnt = sum(1 for r in risks if r.get("is_breached"))
+    crit_cnt = sum(1 for r in risks if r.get("risk_level") == "Critical")
+
+    if count == 0:
+        reply = "No monitored items matching your SLA risk criteria were found."
+    else:
+        filter_desc = f"{risk_level.capitalize()}-risk " if risk_level else ""
+        entity_desc = f"{entity_filter} " if entity_filter else ""
+        reply = (
+            f"Found {count} {filter_desc}{entity_desc}monitored item{'s' if count != 1 else ''}. "
+            f"{breached_cnt} currently breached, {crit_cnt} at Critical risk."
+        )
+
+    return {
+        "reply": reply,
+        "data": risks,
+        "data_type": "sla_risks",
+        "requires_confirmation": False,
+        "pending_action": None,
+    }
+
 
 
 async def execute_confirmed_action(action: dict, db: Session) -> dict:

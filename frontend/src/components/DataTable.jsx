@@ -47,6 +47,16 @@ const COLUMN_CONFIG = {
     { key: 'status', label: 'Status', badge: true },
     { key: 'assigned_to', label: 'Assigned To' },
   ],
+  sla_risks: [
+    { key: 'entity_id', label: 'Item ID' },
+    { key: 'title', label: 'Title', truncate: 32 },
+    { key: 'service_name', label: 'Service' },
+    { key: 'priority', label: 'Priority', badge: true },
+    { key: 'risk_level', label: 'Risk Level', badge: true },
+    { key: 'percent_elapsed', label: 'SLA Elapsed', formatPercent: true },
+    { key: 'status_label', label: 'SLA Status', badge: true },
+    { key: 'recommended_action', label: 'Recommended Action', truncate: 50 },
+  ],
 };
 
 function truncate(text, max) {
@@ -71,12 +81,16 @@ export default function DataTable({ data, dataType }) {
         </thead>
         <tbody>
           {data.map((row, i) => (
-            <tr key={row.incident_id || row.id || i}>
+            <tr key={row.entity_id || row.incident_id || row.id || i}>
               {columns.map(col => (
                 <td key={col.key}>
                   {col.badge ? (
-                    <span className={`badge badge-${(row[col.key] || '').toLowerCase().replace(' ', '_')}`}>
+                    <span className={`badge badge-${(row[col.key] || '').toLowerCase().replace(/[\s\-_]+/g, '_')}`}>
                       {row[col.key] || '—'}
+                    </span>
+                  ) : col.formatPercent ? (
+                    <span className="sla-percent-value">
+                      {row[col.key] != null ? `${row[col.key]}%` : '—'}
                     </span>
                   ) : col.truncate ? (
                     truncate(row[col.key], col.truncate) || '—'

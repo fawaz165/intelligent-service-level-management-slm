@@ -114,3 +114,52 @@ export async function uploadFile(file) {
 
   return res.json();
 }
+
+/**
+ * Get aggregate SLA dashboard metrics.
+ * @returns {Promise<Object>} Metrics summary
+ */
+export async function getSlaMetrics() {
+  const res = await fetch(`${API_BASE}/sla/metrics`);
+  if (!res.ok) throw new Error('Failed to fetch SLA metrics');
+  return res.json();
+}
+
+/**
+ * Get evaluated SLA risks with optional filters.
+ * @param {Object} params - Query filters { risk_level, entity, service, breached_only, include_resolved }
+ * @returns {Promise<Array>} Monitored items with SLA risks
+ */
+export async function getSlaRisks(params = {}) {
+  const query = new URLSearchParams();
+  if (params.risk_level) query.append('risk_level', params.risk_level);
+  if (params.entity) query.append('entity', params.entity);
+  if (params.service) query.append('service', params.service);
+  if (params.breached_only) query.append('breached_only', 'true');
+  if (params.include_resolved) query.append('include_resolved', 'true');
+
+  const qs = query.toString();
+  const url = `${API_BASE}/sla/risks${qs ? `?${qs}` : ''}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error('Failed to fetch SLA risk data');
+  return res.json();
+}
+
+/**
+ * On-demand DeepSeek-R1 1.5B qualitative root cause prediction and technical action plan.
+ * @param {string} entityType - "ticket" or "incident"
+ * @param {string|number} id - Target ID
+ * @returns {Promise<Object>} Enriched item with ML prediction
+ */
+export async function predictSlaRisk(entityType, id) {
+  const res = await fetch(`${API_BASE}/sla/predict`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ entity_type: entityType, id: String(id) }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || `Risk prediction failed (${res.status})`);
+  }
+  return res.json();
+}

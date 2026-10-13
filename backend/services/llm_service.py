@@ -151,21 +151,26 @@ def _try_deterministic_parse(user_message: str) -> Optional[LLMIntent]:
     is_delete = any(kw in msg_lower for kw in ["delete", "remove", "drop"])
     is_update = any(kw in msg_lower for kw in ["update", "change", "modify", "edit", "set", "assign", "close", "resolve"])
 
-    # ── Detect entity (strictly differentiate incident vs ticket) ──
+    # ── Detect entity (strictly differentiate incident vs ticket vs sla_risk) ──
     entity = None
-    if words & _INCIDENT_SYNONYMS:
+    is_sla_risk = (
+        bool(words & {"risk", "risks", "breach", "breaches", "breaching"})
+        or any(p in msg_lower for p in ["at risk", "at-risk", "sla monitoring", "sla prediction", "predict breach", "predict sla", "sla status"])
+    )
+    if is_sla_risk:
+        entity = "sla_risk"
+        is_read = True
+    elif words & _INCIDENT_SYNONYMS:
         entity = "incident"
     elif words & {"ticket", "tickets"}:
         entity = "ticket"
+    elif "sla" in msg_lower:
+        entity = "sla"
     else:
         for kw, ent in _ENTITY_KEYWORDS.items():
             if kw in words:
                 entity = ent
                 break
-
-    # Special case: "SLA records", "SLA" anywhere
-    if "sla" in msg_lower:
-        entity = "sla"
 
     # ── Extract category / service ───────────────────────────────────
     detected_category = None
@@ -278,6 +283,20 @@ def _try_deterministic_parse(user_message: str) -> Optional[LLMIntent]:
                     filters["service"] = svc_kw
                     break
 
+        elif entity == "sla_risk":
+            if words & _TICKET_SYNONYMS:
+                filters["entity"] = "ticket"
+            elif words & _INCIDENT_SYNONYMS:
+                filters["entity"] = "incident"
+            if "breach" in words or "breaches" in words or "breached" in words:
+                filters["breached_only"] = True
+            if detected_priority:
+                filters["risk_level"] = detected_priority
+            if detected_category:
+                filters["service"] = detected_category
+            if any(w in words for w in ["predict", "prediction", "ai"]):
+                filters["with_ai"] = True
+
         elif entity == "file":
             uploader_match = re.search(r'uploaded\s+by\s+([a-zA-Z0-9_-]+)', msg_lower)
             if uploader_match:
@@ -302,6 +321,7 @@ def _try_deterministic_parse(user_message: str) -> Optional[LLMIntent]:
             "service": "services",
             "user": "users",
             "sla": "SLA records",
+            "sla_risk": "SLA risk evaluations",
             "file": "files",
         }.get(entity, entity)
         msg = f"Retrieving {desc + ' ' if desc else ''}{entity_display}."
@@ -611,11 +631,53 @@ async def generate_response(user_message: str, context: str) -> str:
 
         data = resp.json()
         raw = data.get("message", {}).get("content", "")
-        return _strip_think_blocks(raw) or "Operation completed."
+        return strip_think_blocks(raw) or "Operation completed."
 
     except Exception as e:
         logger.warning("Response generation failed: %s", e)
         return "Operation completed successfully."
+
+
+def strip_think_blocks(text: str) -> str:
+    """Remove <think>...</think> reasoning blocks produced by DeepSeek-R1."""
+    if not text:
+        return ""
+    cleaned = re.sub(r"<think>[\s\S]*?</think>", "", text, flags=re.DOTALL)
+    cleaned = re.sub(r"<think>[\s\S]*$", "", cleaned, flags=re.DOTALL)
+    return cleaned.strip()
+
+
+_strip_think_blocks = strip_think_blocks
+clean_think_tags = strip_think_blocks
+
+
+async def call_llm(prompt: str, system_prompt: Optional[str] = None, max_tokens: int = 256) -> str:
+    """
+    Directly invoke Ollama / DeepSeek-R1:1.5B with a prompt and return stripped text.
+    """
+    messages = []
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+    messages.append({"role": "user", "content": prompt})
+
+    payload = {
+        "model": settings.OLLAMA_MODEL,
+        "messages": messages,
+        "stream": False,
+        "options": {
+            "num_ctx": 2048,
+            "num_predict": max_tokens,
+            "temperature": 0.3,
+        },
+        "keep_alive": "10m",
+    }
+    resp = await _http_client.post(
+        f"{settings.OLLAMA_URL}/api/chat",
+        json=payload,
+    )
+    resp.raise_for_status()
+    raw = resp.json().get("message", {}).get("content", "")
+    return strip_think_blocks(raw)
 
 
 async def check_ollama() -> dict:
