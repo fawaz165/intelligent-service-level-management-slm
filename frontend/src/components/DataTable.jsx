@@ -49,13 +49,13 @@ const COLUMN_CONFIG = {
   ],
   sla_risks: [
     { key: 'entity_id', label: 'Item ID' },
-    { key: 'title', label: 'Title', truncate: 32 },
+    { key: 'title', label: 'Title', isTitle: true },
     { key: 'service_name', label: 'Service' },
     { key: 'priority', label: 'Priority', badge: true },
     { key: 'risk_level', label: 'Risk Level', badge: true },
     { key: 'percent_elapsed', label: 'SLA Elapsed', formatPercent: true },
     { key: 'status_label', label: 'SLA Status', badge: true },
-    { key: 'recommended_action', label: 'Recommended Action', truncate: 50 },
+    { key: 'recommended_action', label: 'Recommended Action', isAction: true },
   ],
 };
 
@@ -75,7 +75,12 @@ export default function DataTable({ data, dataType }) {
         <thead>
           <tr>
             {columns.map(col => (
-              <th key={col.key}>{col.label}</th>
+              <th
+                key={col.key}
+                className={`col-${col.key} ${col.isAction ? 'col-action' : ''} ${col.isTitle ? 'col-title' : ''}`}
+              >
+                {col.label}
+              </th>
             ))}
           </tr>
         </thead>
@@ -83,7 +88,10 @@ export default function DataTable({ data, dataType }) {
           {data.map((row, i) => (
             <tr key={row.entity_id || row.incident_id || row.id || i}>
               {columns.map(col => (
-                <td key={col.key}>
+                <td
+                  key={col.key}
+                  className={`col-${col.key} ${col.isAction ? 'col-action' : ''} ${col.isTitle ? 'col-title' : ''}`}
+                >
                   {col.badge ? (
                     <span className={`badge badge-${(row[col.key] || '').toLowerCase().replace(/[\s\-_]+/g, '_')}`}>
                       {row[col.key] || '—'}
@@ -92,6 +100,14 @@ export default function DataTable({ data, dataType }) {
                     <span className="sla-percent-value">
                       {row[col.key] != null ? `${row[col.key]}%` : '—'}
                     </span>
+                  ) : col.isAction ? (
+                    <div className="action-text-wrapper" title={row[col.key] || ''}>
+                      {row[col.key] || '—'}
+                    </div>
+                  ) : col.isTitle ? (
+                    <div className="title-text-wrapper" title={row[col.key] || ''}>
+                      {row[col.key] || '—'}
+                    </div>
                   ) : col.truncate ? (
                     truncate(row[col.key], col.truncate) || '—'
                   ) : (

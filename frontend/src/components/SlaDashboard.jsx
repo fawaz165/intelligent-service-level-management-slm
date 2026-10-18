@@ -80,13 +80,33 @@ export default function SlaDashboard() {
     }
   }
 
+  const isItemResolved = item => ['resolved', 'closed'].includes((item.status || '').toLowerCase());
+
+  // Count items by category for tab badges matching SQLite data
+  const counts = {
+    all_active: items.filter(i => !isItemResolved(i)).length,
+    breached: items.filter(i => i.is_breached && !isItemResolved(i)).length,
+    critical: items.filter(i => i.risk_level === 'Critical' && !isItemResolved(i)).length,
+    high: items.filter(i => i.risk_level === 'High' && !isItemResolved(i)).length,
+    medium: items.filter(i => i.risk_level === 'Medium' && !isItemResolved(i)).length,
+    low: items.filter(i => i.risk_level === 'Low' && !isItemResolved(i)).length,
+    resolved: items.filter(i => isItemResolved(i)).length,
+    all_records: items.length,
+  };
+
   // Filter items in memory for instant responsiveness
   const filteredItems = items.filter(item => {
-    // Risk filter
-    if (riskFilter === 'BREACHED' && !item.is_breached) return false;
-    if (riskFilter !== 'ALL' && riskFilter !== 'BREACHED' && item.risk_level.toUpperCase() !== riskFilter) {
-      return false;
-    }
+    const isResolved = isItemResolved(item);
+
+    // Tab filter
+    if (riskFilter === 'ALL' && isResolved) return false;
+    if (riskFilter === 'BREACHED' && (!item.is_breached || isResolved)) return false;
+    if (riskFilter === 'CRITICAL' && (item.risk_level !== 'Critical' || isResolved)) return false;
+    if (riskFilter === 'HIGH' && (item.risk_level !== 'High' || isResolved)) return false;
+    if (riskFilter === 'MEDIUM' && (item.risk_level !== 'Medium' || isResolved)) return false;
+    if (riskFilter === 'LOW' && (item.risk_level !== 'Low' || isResolved)) return false;
+    if (riskFilter === 'RESOLVED' && !isResolved) return false;
+    // 'ALL_RECORDS' shows all items
 
     // Entity filter
     if (entityFilter === 'TICKET' && item.entity_type !== 'ticket') return false;
@@ -109,6 +129,17 @@ export default function SlaDashboard() {
 
     return true;
   });
+
+  const filterTabs = [
+    { id: 'ALL', label: 'All Active', count: counts.all_active },
+    { id: 'BREACHED', label: '🚨 Breached', count: counts.breached },
+    { id: 'CRITICAL', label: 'Critical Risk', count: counts.critical },
+    { id: 'HIGH', label: 'High Risk', count: counts.high },
+    { id: 'MEDIUM', label: 'Medium Risk', count: counts.medium },
+    { id: 'LOW', label: 'Low Risk', count: counts.low },
+    { id: 'RESOLVED', label: '✅ Resolved', count: counts.resolved },
+    { id: 'ALL_RECORDS', label: '📁 All Records', count: counts.all_records },
+  ];
 
   return (
     <div className="sla-dashboard">
@@ -148,7 +179,8 @@ export default function SlaDashboard() {
             <div className="sla-kpi-value">{metrics.total_monitored}</div>
             <div className="sla-kpi-detail">
               <span>{metrics.by_entity?.tickets?.total || 0} Tickets</span> •{' '}
-              <span>{metrics.by_entity?.incidents?.total || 0} Incidents</span>
+              <span>{metrics.by_entity?.incidents?.total || 0} Incidents</span> •{' '}
+              <span className="sla-kpi-resolved-tag">{counts.resolved} Resolved</span>
             </div>
           </div>
 
@@ -156,7 +188,7 @@ export default function SlaDashboard() {
             <div className="sla-kpi-label">SLA Breaches</div>
             <div className="sla-kpi-value value-critical">{metrics.breached_count}</div>
             <div className="sla-kpi-detail">
-              <span className="badge badge-critical">Immediate Action Required</span>
+              <span className="badge badge-critical">Deadline Exceeded</span>
             </div>
           </div>
 
@@ -182,6 +214,9 @@ export default function SlaDashboard() {
             <div className="sla-kpi-label">Compliance Rate</div>
             <div className="sla-kpi-value">
               {metrics.compliance_rate}%
+            </div>
+            <div className="sla-kpi-detail">
+              <span>Avg SLA Elapsed: {metrics.average_elapsed_percent}%</span>
             </div>
             <div className="sla-gauge-track">
               <div
@@ -247,20 +282,14 @@ export default function SlaDashboard() {
       {/* Filter and Search Bar */}
       <div className="sla-controls-bar">
         <div className="sla-filter-tabs">
-          {[
-            { id: 'ALL', label: 'All Items' },
-            { id: 'BREACHED', label: '🚨 Breached' },
-            { id: 'CRITICAL', label: 'Critical Risk' },
-            { id: 'HIGH', label: 'High Risk' },
-            { id: 'MEDIUM', label: 'Medium Risk' },
-            { id: 'LOW', label: 'Low Risk' },
-          ].map(tab => (
+          {filterTabs.map(tab => (
             <button
               key={tab.id}
               className={`sla-filter-tab ${riskFilter === tab.id ? 'active' : ''}`}
               onClick={() => setRiskFilter(tab.id)}
             >
-              {tab.label}
+              <span>{tab.label}</span>
+              <span className="sla-tab-count">{tab.count}</span>
             </button>
           ))}
         </div>
@@ -349,9 +378,12 @@ export default function SlaDashboard() {
                         <strong>{item.percent_elapsed}%</strong>)
                       </span>
                       <span>
-                        <strong>Target:</strong> {item.resolution_target || '—'} •{' '}
-                        {isBreached
-                          ? `Exceeded by ${item.elapsed_minutes - (item.target_minutes || 0)}m`
+                        <strong>Target:</strong> {item.target_display || item.resolution_target || '—'} (
+                        {item.target_name || (item.target_type === 'response' ? 'Response Target' : 'Resolution Target')}) •{' '}
+                        {item.status === 'resolved' || item.status === 'closed'
+                          ? `Resolved in ${item.elapsed_minutes}m`
+                          : isBreached
+                          ? `Exceeded by ${Math.max(0, item.elapsed_minutes - (item.target_minutes || 0))}m`
                           : `Remaining: ${item.remaining_minutes || 0}m`}
                       </span>
                     </div>
