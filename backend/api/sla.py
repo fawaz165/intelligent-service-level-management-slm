@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from backend.database.connection import get_db
 from backend.database.models import SLA, Service, Ticket, Incident
-from backend.services import sla_service
+from backend.services import sla_service, telemetry_service
 
 router = APIRouter(prefix="/api/sla", tags=["sla"])
 
@@ -25,6 +25,12 @@ class PredictRequest(BaseModel):
 def get_sla_metrics(db: Session = Depends(get_db)):
     """Return aggregate SLA dashboard metrics."""
     return sla_service.get_sla_dashboard_metrics(db)
+
+
+@router.get("/telemetry")
+def get_telemetry(db: Session = Depends(get_db)):
+    """Return real host and labeled simulated IT infrastructure telemetry."""
+    return telemetry_service.get_telemetry_metrics(db)
 
 
 @router.get("/risks")

@@ -651,9 +651,10 @@ _strip_think_blocks = strip_think_blocks
 clean_think_tags = strip_think_blocks
 
 
-async def call_llm(prompt: str, system_prompt: Optional[str] = None, max_tokens: int = 256) -> str:
+async def call_llm(prompt: str, system_prompt: Optional[str] = None, max_tokens: int = 350) -> str:
     """
     Directly invoke Ollama / DeepSeek-R1:1.5B with a prompt and return stripped text.
+    Handles Ollama 0.5+ native 'thinking' field for reasoning models when 'content' is empty.
     """
     messages = []
     if system_prompt:
@@ -667,7 +668,7 @@ async def call_llm(prompt: str, system_prompt: Optional[str] = None, max_tokens:
         "options": {
             "num_ctx": 2048,
             "num_predict": max_tokens,
-            "temperature": 0.3,
+            "temperature": 0.2,
         },
         "keep_alive": "10m",
     }
@@ -676,8 +677,30 @@ async def call_llm(prompt: str, system_prompt: Optional[str] = None, max_tokens:
         json=payload,
     )
     resp.raise_for_status()
-    raw = resp.json().get("message", {}).get("content", "")
-    return strip_think_blocks(raw)
+    msg = resp.json().get("message", {})
+    content = msg.get("content", "").strip()
+    thinking = msg.get("thinking", "").strip()
+
+    if content:
+        cleaned = strip_think_blocks(content)
+        if cleaned:
+            return cleaned
+
+    # Fallback for reasoning models that placed generation inside thinking
+    if thinking:
+        cleaned_think = strip_think_blocks(thinking)
+        lines = [
+            line.strip()
+            for line in cleaned_think.split("\n")
+            if line.strip() and not line.strip().startswith(("Okay", "Hmm", "Wait", "Let me", "So I need", "First, I should"))
+        ]
+        if lines:
+            return "\n".join(lines[:4])
+        # If all lines had prefixes, strip prefixes
+        fallback_lines = [line.strip() for line in cleaned_think.split("\n") if line.strip()]
+        return "\n".join(fallback_lines[:3])
+
+    return ""
 
 
 async def check_ollama() -> dict:

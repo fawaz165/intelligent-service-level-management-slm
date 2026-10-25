@@ -45,6 +45,7 @@ def create_incident(data: IncidentCreate, allow_duplicate: bool = False, db: Ses
 
 
 @router.put("/{incident_id}")
+@router.patch("/{incident_id}")
 def update_incident(incident_id: str, data: IncidentUpdate, db: Session = Depends(get_db)):
     result = incident_service.update_incident(db, incident_id, data.model_dump(exclude_unset=True))
     if not result:

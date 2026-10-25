@@ -135,13 +135,17 @@ def update_incident(db: Session, incident_id: Union[int, str], data: dict) -> Op
         return None
 
     for field in ("title", "description", "severity", "affected_service", "affected_component", "status", "assigned_to", "tags"):
-        if field in data and data[field] is not None:
+        if field in data:
             val = data[field]
-            if field == "severity":
-                val = val.strip().lower()
-            elif field == "status":
-                val = val.strip().lower().replace(" ", "_").replace("-", "_")
-            setattr(inc, field, val)
+            if field == "assigned_to":
+                clean_val = str(val).strip() if val is not None else ""
+                setattr(inc, field, clean_val if clean_val and clean_val.lower() != "unassigned" else None)
+            elif val is not None:
+                if field == "severity":
+                    val = val.strip().lower()
+                elif field == "status":
+                    val = val.strip().lower().replace(" ", "_").replace("-", "_")
+                setattr(inc, field, val)
 
     db.commit()
     db.refresh(inc)

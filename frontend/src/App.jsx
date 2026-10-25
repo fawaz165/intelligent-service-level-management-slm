@@ -256,7 +256,7 @@ export default function App() {
 
       {/* View Content */}
       {activeView === 'sla' ? (
-        <SlaDashboard />
+        <SlaDashboard onMetricsUpdate={(m) => setBreachCount(m?.breached_count)} />
       ) : (
         <>
           {/* Chat Area */}

@@ -163,3 +163,52 @@ export async function predictSlaRisk(entityType, id) {
   }
   return res.json();
 }
+
+/**
+ * Get live system and correlated IT telemetry metrics.
+ * @returns {Promise<Object>} Telemetry data containing real host and labeled simulated metrics
+ */
+export async function getTelemetryMetrics() {
+  const res = await fetch(`${API_BASE}/sla/telemetry`);
+  if (!res.ok) throw new Error('Failed to fetch telemetry metrics');
+  return res.json();
+}
+
+/**
+ * Update a ticket's status, assignment, or priority in SQLite.
+ * @param {number|string} ticketId
+ * @param {Object} data
+ * @returns {Promise<Object>} Updated ticket
+ */
+export async function updateTicket(ticketId, data) {
+  const cleanId = String(ticketId).replace('#', '').trim();
+  const res = await fetch(`${API_BASE}/tickets/${cleanId}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || `Failed to update ticket #${cleanId}`);
+  }
+  return res.json();
+}
+
+/**
+ * Update an incident's status, assignment, or severity in SQLite.
+ * @param {string} incidentId
+ * @param {Object} data
+ * @returns {Promise<Object>} Updated incident
+ */
+export async function updateIncident(incidentId, data) {
+  const res = await fetch(`${API_BASE}/incidents/${encodeURIComponent(incidentId)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || `Failed to update incident ${incidentId}`);
+  }
+  return res.json();
+}

@@ -152,13 +152,17 @@ def update_ticket(db: Session, ticket_id: int, data: dict) -> Optional[dict]:
         "category": _normalize_category,
         "priority": _normalize_priority,
         "status": _normalize_status,
-        "assigned_to": lambda v: int(v) if v is not None else None,
-        "service_id": lambda v: int(v) if v is not None else None,
+        "assigned_to": lambda v: int(v) if (v is not None and str(v).strip() != "" and str(v).strip().lower() != "unassigned") else None,
+        "service_id": lambda v: int(v) if (v is not None and str(v).strip() != "") else None,
     }
 
     for field, normalizer in field_map.items():
-        if field in data and data[field] is not None:
-            setattr(ticket, field, normalizer(data[field]))
+        if field in data:
+            val = data[field]
+            if field in ("assigned_to", "service_id"):
+                setattr(ticket, field, normalizer(val))
+            elif val is not None:
+                setattr(ticket, field, normalizer(val))
 
     db.commit()
     db.refresh(ticket)

@@ -45,6 +45,7 @@ def create_ticket(data: TicketCreate, allow_duplicate: bool = False, db: Session
 
 
 @router.put("/{ticket_id}")
+@router.patch("/{ticket_id}")
 def update_ticket(ticket_id: int, data: TicketUpdate, db: Session = Depends(get_db)):
     result = ticket_service.update_ticket(db, ticket_id, data.model_dump(exclude_unset=True))
     if not result:
