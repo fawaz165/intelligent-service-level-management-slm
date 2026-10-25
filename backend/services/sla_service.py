@@ -949,39 +949,40 @@ async def enrich_with_ai_prediction(item_risk: dict) -> dict:
 
         current_section = None
         for line in lines:
-            lower = line.lower()
+            clean_line = line.strip("*# ").strip()
+            lower = clean_line.lower()
             if "incident summary" in lower:
                 current_section = "summary"
-                val = line.split(":", 1)[-1].strip() if ":" in line else ""
+                val = clean_line.split(":", 1)[-1].strip("*# ").strip() if ":" in clean_line else ""
                 if val:
                     section_buffers["summary"].append(val)
             elif "possible root cause" in lower or "root cause" in lower:
                 current_section = "hypothesis"
-                val = line.split(":", 1)[-1].strip() if ":" in line else ""
+                val = clean_line.split(":", 1)[-1].strip("*# ").strip() if ":" in clean_line else ""
                 if val:
                     section_buffers["hypothesis"].append(val)
             elif "sla risk" in lower or "risk explanation" in lower:
                 current_section = "risk"
-                val = line.split(":", 1)[-1].strip() if ":" in line else ""
+                val = clean_line.split(":", 1)[-1].strip("*# ").strip() if ":" in clean_line else ""
                 if val:
                     section_buffers["risk"].append(val)
             elif "recommended troubleshooting" in lower or "troubleshooting step" in lower or "action plan" in lower:
                 current_section = "action"
-                val = line.split(":", 1)[-1].strip() if ":" in line else ""
+                val = clean_line.split(":", 1)[-1].strip("*# ").strip() if ":" in clean_line else ""
                 if val:
                     section_buffers["action"].append(val)
             elif "supporting evidence" in lower:
                 current_section = "evidence"
-                val = line.split(":", 1)[-1].strip() if ":" in line else ""
+                val = clean_line.split(":", 1)[-1].strip("*# ").strip() if ":" in clean_line else ""
                 if val:
                     section_buffers["evidence"].append(val)
             elif "uncertaint" in lower or "missing info" in lower:
                 current_section = "uncertainties"
-                val = line.split(":", 1)[-1].strip() if ":" in line else ""
+                val = clean_line.split(":", 1)[-1].strip("*# ").strip() if ":" in clean_line else ""
                 if val:
                     section_buffers["uncertainties"].append(val)
             elif current_section:
-                section_buffers[current_section].append(line)
+                section_buffers[current_section].append(clean_line)
 
         # Helper to deduplicate near-identical sentences in a section
         def _dedup_section(text: str) -> str:
