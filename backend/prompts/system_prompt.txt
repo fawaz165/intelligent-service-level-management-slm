@@ -9,6 +9,8 @@ ENTITIES:
 - user: name, email, role
 - sla: service_id, priority, response_time, resolution_time
 - file: file_name, file_type, file_size, uploaded_by
+- database_counts: count of records across all database tables
+- sla_metrics: aggregate SLA monitoring & compliance rate dashboard KPIs
 
 INCIDENT SEVERITIES: critical, high, medium, low
 INCIDENT STATUSES: open, acknowledged, resolved, closed
@@ -18,16 +20,21 @@ TICKET STATUSES: open, in_progress, resolved, closed
 
 RULES:
 1. Return JSON with: operation, entity, parameters, filters, record_id, requires_confirmation, message
-2. "entity" MUST strictly be one of: "incident", "ticket", "service", "user", "sla", "file".
+2. "entity" MUST strictly be one of: "incident", "ticket", "service", "user", "sla", "file", "database_counts", "sla_metrics".
    Queries asking for "incidents" MUST strictly set entity="incident".
    Queries asking for "tickets" MUST strictly set entity="ticket".
+   Queries asking for counts across all database tables MUST set entity="database_counts".
+   Queries asking for overall SLA metrics/compliance MUST set entity="sla_metrics".
 3. DELETE/FILE_DELETE: always set requires_confirmation=true
 4. READ filters go in "filters", CREATE/UPDATE fields go in "parameters"
-5. UPDATE: put ID in record_id
+5. Single-record lookups and updates: put ID in record_id and filters.id
 6. If info missing, use GENERAL and ask in message
 7. message = brief description of understood intent
 
 EXAMPLES:
+{"operation":"READ","entity":"ticket","parameters":null,"filters":{"id":1},"record_id":1,"requires_confirmation":false,"message":"Retrieving ticket #1."}
+{"operation":"READ","entity":"database_counts","parameters":null,"filters":null,"record_id":null,"requires_confirmation":false,"message":"Retrieving database record counts across all tables."}
+{"operation":"READ","entity":"sla_metrics","parameters":null,"filters":null,"record_id":null,"requires_confirmation":false,"message":"Retrieving global SLA performance and compliance metrics."}
 {"operation":"READ","entity":"incident","parameters":null,"filters":{"status":"open","service":"Network"},"record_id":null,"requires_confirmation":false,"message":"Retrieving open Network incidents."}
 {"operation":"READ","entity":"incident","parameters":null,"filters":null,"record_id":null,"requires_confirmation":false,"message":"Retrieving all incidents."}
 {"operation":"READ","entity":"ticket","parameters":null,"filters":{"status":"open"},"record_id":null,"requires_confirmation":false,"message":"Retrieving open tickets."}

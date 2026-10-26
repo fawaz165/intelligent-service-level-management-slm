@@ -46,6 +46,7 @@ _INTENT_SCHEMA = {
             "type": "string",
             "enum": [
                 "ticket", "incident", "service", "user", "sla", "file",
+                "database_counts", "sla_metrics",
             ],
         },
         "parameters": {
@@ -135,6 +136,50 @@ _ENTITY_KEYWORDS = {
 }
 
 
+def _is_sla_metrics_query(msg_lower: str, words: set) -> bool:
+    """
+    Determine if a natural language query is requesting aggregate SLA dashboard/global metrics
+    rather than a filtered list of individual items.
+    """
+    has_sla_context = (
+        "sla" in msg_lower 
+        or "service level" in msg_lower 
+        or "compliance rate" in msg_lower 
+        or "monitored items" in msg_lower
+    )
+    if not has_sla_context:
+        return False
+
+    # Indicators of global / aggregate / summary / metrics requests
+    has_global_indicator = (
+        "global" in words
+        or "metrics" in words
+        or "metric" in words
+        or "kpi" in words
+        or "kpis" in words
+        or "dashboard" in words
+        or "summary" in words
+        or "overview" in words
+        or "compliance rate" in msg_lower
+        or "total monitored" in msg_lower
+        or "separate counts" in msg_lower
+        or "breakdown" in msg_lower
+        or "not overlap" in msg_lower
+        or "overall compliance" in msg_lower
+        or any(p in msg_lower for p in ["sla status", "sla summary", "sla overview", "sla compliance", "sla performance", "sla dashboard", "sla metrics"])
+    )
+
+    # Filtered list indicators (user wants to see specific rows/items, e.g. "show breached items only")
+    # But ONLY if the user is not explicitly asking for global metrics / separate counts / compliance rate
+    is_explicit_list_only = any(p in msg_lower for p in [
+        "items only", "item only", "list of", "show all breached", "show breached items", 
+        "show at-risk", "show at risk", "show healthy", "show on-track", "show on track",
+        "which tickets", "which incidents", "which items", "predict breach", "predict sla"
+    ]) and not ("global" in words or "metrics" in words or "metric" in words or "compliance rate" in msg_lower or "separate counts" in msg_lower or "not overlap" in msg_lower)
+
+    return has_global_indicator and not is_explicit_list_only
+
+
 def _try_deterministic_parse(user_message: str) -> Optional[LLMIntent]:
     """
     Attempt to deterministically parse user intent from keyword patterns.
@@ -151,11 +196,60 @@ def _try_deterministic_parse(user_message: str) -> Optional[LLMIntent]:
     is_delete = any(kw in msg_lower for kw in ["delete", "remove", "drop"])
     is_update = any(kw in msg_lower for kw in ["update", "change", "modify", "edit", "set", "assign", "close", "resolve"])
 
-    # ── Detect entity (strictly differentiate incident vs ticket vs sla_risk) ──
+    # ── Quick Greeting & Help handler ────────────────────────────────
+    if words & {"hello", "hi", "hey", "greetings"} and not (is_read or is_create or is_update or is_delete):
+        return LLMIntent(
+            operation="GENERAL",
+            entity="",
+            parameters=None,
+            filters=None,
+            record_id=None,
+            message="Hello! I am your ISLM assistant. I can help you query tickets, incidents, services, SLA metrics, database counts, and files. What would you like to do?",
+        )
+
+    # ── 1. Detect database record-count intent (Issue 2) ─────────────
+    # Handles: "How many tickets, services, users, SLA records, incidents, and file metadata records are currently stored in the database?"
+    is_count_query = any(p in msg_lower for p in ["how many", "count of", "number of", "record count", "record counts", "table count", "table counts", "summary of records", "counts of"]) or "count" in words or "counts" in words
+    entities_mentioned = sum(1 for e in ["ticket", "tickets", "service", "services", "user", "users", "incident", "incidents", "sla", "file", "files"] if e in words or e in msg_lower)
+    is_database_count = is_count_query and (
+        ("database" in words or "tables" in words or "table" in words or "stored" in words)
+        or entities_mentioned >= 2
+    )
+    if is_database_count:
+        return LLMIntent(
+            operation="READ",
+            entity="database_counts",
+            parameters=None,
+            filters=None,
+            record_id=None,
+            message="Retrieving database record counts across all tables.",
+        )
+
+    # ── 2. Detect global SLA metrics vs SLA risk items list (Issue 3 & 4) ──
+    # Handles: "What are the SLA metrics?", "Show global SLA metrics", "SLA compliance rate",
+    # "Show the global SLA metrics as separate counts for breached, at-risk, and healthy items...", etc.
+    is_sla_metrics = _is_sla_metrics_query(msg_lower, words)
+    if is_sla_metrics:
+        return LLMIntent(
+            operation="READ",
+            entity="sla_metrics",
+            parameters=None,
+            filters=None,
+            record_id=None,
+            message="Retrieving global SLA performance and compliance dashboard metrics.",
+        )
+
+    # ── 3. Detect entity (strictly differentiate incident vs ticket vs sla_risk) ──
     entity = None
     is_sla_risk = (
-        bool(words & {"risk", "risks", "breach", "breaches", "breaching"})
-        or any(p in msg_lower for p in ["at risk", "at-risk", "sla monitoring", "sla prediction", "predict breach", "predict sla", "sla status"])
+        bool(words & {"risk", "risks", "breach", "breaches", "breaching", "breached"})
+        or any(p in msg_lower for p in [
+            "at risk", "at-risk", "at_risk",
+            "healthy sla", "healthy item", "healthy items", "on-track", "on track", "on_track",
+            "sla monitoring", "sla prediction", "predict breach", "predict sla",
+            "breached sla", "sla breach", "sla breaches", "breached items", "breached item"
+        ])
+        or (("healthy" in words or "on-track" in msg_lower or "on track" in msg_lower) and ("sla" in msg_lower or "item" in msg_lower or "items" in msg_lower))
     )
     if is_sla_risk:
         entity = "sla_risk"
@@ -183,7 +277,7 @@ def _try_deterministic_parse(user_message: str) -> Optional[LLMIntent]:
     # "for an invalid category", "category: XYZ", "tickets for [category]"
     cat_match = re.search(r'(?:for|in|under|with)\s+(?:an?\s+)?([a-zA-Z0-9_-]+)\s+categor(?:y|ies)', msg_lower)
     if not cat_match:
-        cat_match = re.search(r'categor(?:y|ies)\s*[:=]?\s*([a-zA-Z0-9_-]+)', msg_lower)
+        cat_match = re.search(r'categor(?:y|ies)\s*[:=]\s*([a-zA-Z0-9_-]+)', msg_lower)
     if not cat_match:
         cat_match = re.search(r'tickets?\s+(?:for|in|under)\s+(?:an?\s+)?([a-zA-Z0-9_-]+)', msg_lower)
 
@@ -191,9 +285,10 @@ def _try_deterministic_parse(user_message: str) -> Optional[LLMIntent]:
         cand = cat_match.group(1).lower()
         if cand in _CATEGORY_MAP:
             detected_category = _CATEGORY_MAP[cand]
-        elif cand not in ("all", "open", "closed", "resolved", "new", "high", "low", "medium", "critical"):
-            detected_category = cat_match.group(1).capitalize()
-        if not entity:
+        elif cand not in ("all", "open", "closed", "resolved", "new", "high", "low", "medium", "critical", "do", "the", "not", "any", "each"):
+            if cand.capitalize() in VALID_TICKET_CATEGORIES or "invalid" in msg_lower:
+                detected_category = cat_match.group(1).capitalize()
+        if not entity and detected_category:
             entity = "ticket"
 
     # Check for "invalid category" phrase specifically
@@ -238,17 +333,61 @@ def _try_deterministic_parse(user_message: str) -> Optional[LLMIntent]:
             elif cand_stat not in ("all", "ticket", "tickets", "incident", "incidents", "service", "services"):
                 detected_status = cand_stat
 
-    # ── Extract record ID (e.g., "ticket #5", "incident #2") ─────────
+    # ── Extract record ID (e.g., "ticket ID 1", "ticket #5", "incident #2") (Issue 1) ──
     record_id = None
-    id_match = re.search(r'#?\b(\d+)\b', msg_lower)
-    if id_match and (is_delete or is_update):
-        record_id = int(id_match.group(1))
+    target_incident_code = None
+
+    # Explicit ticket ID detection
+    ticket_id_match = re.search(r'tickets?\s*(?:id|#)?\s*[:#]?\s*(\d+)', msg_lower)
+    if not ticket_id_match:
+        ticket_id_match = re.search(r'(?:ticket|record)\s+(?:with\s+)?(?:id|#)\s*[:#]?\s*(\d+)', msg_lower)
+    if not ticket_id_match and ("ticket" in words or "tickets" in words or entity == "ticket"):
+        ticket_id_match = re.search(r'\b(?:id|#)\s*[:#]?\s*(\d+)\b', msg_lower)
+
+    # Explicit incident ID / code detection
+    inc_code_match = re.search(r'\b(inc-\d{8}-\d{3})\b', msg_lower, re.IGNORECASE)
+    if inc_code_match:
+        target_incident_code = inc_code_match.group(1).upper()
+        entity = "incident"
+    else:
+        inc_id_match = re.search(r'incidents?\s*(?:id|#)?\s*[:#]?\s*(\d+)', msg_lower)
+        if inc_id_match:
+            record_id = int(inc_id_match.group(1))
+            entity = "incident"
+
+    if ticket_id_match:
+        record_id = int(ticket_id_match.group(1))
+        entity = "ticket"
+    elif not record_id and (is_delete or is_update):
+        id_match = re.search(r'#?\b(\d+)\b', msg_lower)
+        if id_match:
+            record_id = int(id_match.group(1))
 
     # ── BUILD THE INTENT ─────────────────────────────────────────────
 
     # READ operations (most common)
     if is_read and entity:
         filters = {}
+        if record_id is not None:
+            filters["id"] = record_id
+            return LLMIntent(
+                operation="READ",
+                entity=entity,
+                parameters=None,
+                record_id=record_id,
+                filters=filters,
+                message=f"Retrieving {entity} #{record_id} details.",
+            )
+        if target_incident_code:
+            filters["incident_id"] = target_incident_code
+            return LLMIntent(
+                operation="READ",
+                entity="incident",
+                parameters=None,
+                record_id=None,
+                filters=filters,
+                message=f"Retrieving incident {target_incident_code} details.",
+            )
         if detected_status:
             filters["status"] = detected_status
 
@@ -288,10 +427,16 @@ def _try_deterministic_parse(user_message: str) -> Optional[LLMIntent]:
                 filters["entity"] = "ticket"
             elif words & _INCIDENT_SYNONYMS:
                 filters["entity"] = "incident"
-            if "breach" in words or "breaches" in words or "breached" in words:
+            if any(w in words for w in ["breach", "breaches", "breached"]):
                 filters["breached_only"] = True
-            if detected_priority:
+                filters["risk_level"] = "breached"
+            elif any(p in msg_lower for p in ["at risk", "at-risk", "at_risk"]):
+                filters["risk_level"] = "at_risk"
+            elif any(p in msg_lower for p in ["healthy", "on-track", "on track", "on_track"]):
+                filters["risk_level"] = "healthy"
+            elif detected_priority:
                 filters["risk_level"] = detected_priority
+
             if detected_category:
                 filters["service"] = detected_category
             if any(w in words for w in ["predict", "prediction", "ai"]):
@@ -472,6 +617,45 @@ def _post_validate_llm_intent(intent: LLMIntent, user_message: str) -> LLMIntent
     msg_lower = user_message.lower().strip()
     words = set(re.findall(r'[a-z_]+', msg_lower))
 
+    # Guard 1: Database record-count intent (Issue 2)
+    is_count_query = any(p in msg_lower for p in ["how many", "count of", "number of", "record count", "record counts", "table count", "table counts", "summary of records", "counts of"]) or "count" in words or "counts" in words
+    entities_mentioned = sum(1 for e in ["ticket", "tickets", "service", "services", "user", "users", "incident", "incidents", "sla", "file", "files"] if e in words or e in msg_lower)
+    is_database_count = is_count_query and (
+        ("database" in words or "tables" in words or "table" in words or "stored" in words)
+        or entities_mentioned >= 2
+    )
+    if is_database_count:
+        intent.operation = "READ"
+        intent.entity = "database_counts"
+        intent.filters = None
+        intent.record_id = None
+        intent.message = "Retrieving database record counts across all tables."
+        return intent
+
+    # Guard 2: Global SLA metrics vs SLA risk items list (Issue 3 & 4)
+    is_sla_metrics = _is_sla_metrics_query(msg_lower, words)
+    if is_sla_metrics:
+        intent.operation = "READ"
+        intent.entity = "sla_metrics"
+        intent.filters = None
+        intent.record_id = None
+        intent.message = "Retrieving global SLA performance and compliance dashboard metrics."
+        return intent
+
+    # Guard 3: Single ticket lookup by ID (Issue 1)
+    ticket_id_match = re.search(r'tickets?\s*(?:id|#)?\s*[:#]?\s*(\d+)', msg_lower)
+    if not ticket_id_match and ("ticket" in words or "tickets" in words or intent.entity == "ticket"):
+        ticket_id_match = re.search(r'\b(?:id|#)\s*[:#]?\s*(\d+)\b', msg_lower)
+    if ticket_id_match and intent.operation == "READ":
+        tid = int(ticket_id_match.group(1))
+        intent.entity = "ticket"
+        intent.record_id = tid
+        if not intent.filters:
+            intent.filters = {}
+        intent.filters["id"] = tid
+        intent.message = f"Retrieving ticket #{tid} details."
+        return intent
+
     is_read = bool(words & _READ_KEYWORDS)
 
     # Fix #1: LLM said CREATE/UPDATE but user clearly asked to READ/SHOW
@@ -495,12 +679,13 @@ def _post_validate_llm_intent(intent: LLMIntent, user_message: str) -> LLMIntent
             return deterministic
 
     # Fix #3: Incident vs Ticket strict differentiation
-    if "incident" in words or "incidents" in words:
-        if intent.entity != "incident":
-            intent.entity = "incident"
-    elif "ticket" in words or "tickets" in words:
-        if intent.entity != "ticket":
-            intent.entity = "ticket"
+    if intent.entity not in ("database_counts", "database", "sla_metrics", "sla_risk"):
+        if "incident" in words or "incidents" in words:
+            if intent.entity != "incident":
+                intent.entity = "incident"
+        elif "ticket" in words or "tickets" in words:
+            if intent.entity != "ticket":
+                intent.entity = "ticket"
 
     return intent
 

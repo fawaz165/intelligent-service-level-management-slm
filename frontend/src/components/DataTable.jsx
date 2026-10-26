@@ -57,6 +57,16 @@ const COLUMN_CONFIG = {
     { key: 'status_label', label: 'SLA Status', badge: true },
     { key: 'recommended_action', label: 'Recommended Action', isAction: true },
   ],
+  database_counts: [
+    { key: 'table', label: 'Database Table' },
+    { key: 'count', label: 'Record Count' },
+    { key: 'description', label: 'Description' },
+  ],
+  sla_metrics: [
+    { key: 'metric', label: 'SLA Metric' },
+    { key: 'value', label: 'Value' },
+    { key: 'status', label: 'Status', badge: true },
+  ],
 };
 
 function truncate(text, max) {

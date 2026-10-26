@@ -14,8 +14,12 @@ load_dotenv(dotenv_path=env_path)
 class Settings:
     """Centralized application settings."""
 
-    # Database
-    DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite:///./islm.db")
+    # Project Root & Default Database
+    BASE_DIR: Path = Path(__file__).resolve().parent.parent
+    _DEFAULT_DB_FILE: str = (BASE_DIR / "islm_recovered.db").as_posix()
+
+    # Database — uses absolute path on Windows to prevent directory drift
+    DATABASE_URL: str = os.getenv("DATABASE_URL", f"sqlite:///{_DEFAULT_DB_FILE}")
 
     # Ollama / LLM
     OLLAMA_URL: str = os.getenv("OLLAMA_URL", "http://localhost:11434")

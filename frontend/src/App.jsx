@@ -258,7 +258,7 @@ export default function App() {
       {activeView === 'sla' ? (
         <SlaDashboard onMetricsUpdate={(m) => setBreachCount(m?.breached_count)} />
       ) : (
-        <>
+        <main className="chat-view">
           {/* Chat Area */}
           <div className="chat-area">
             {messages.length === 0 ? (
@@ -282,12 +282,12 @@ export default function App() {
                 </div>
               </div>
             ) : (
-              <>
+              <div className="chat-messages-container">
                 {messages.map(msg => (
                   <ChatMessage key={msg.id} msg={msg} />
                 ))}
                 {loading && <LoadingIndicator statusText={statusText} />}
-              </>
+              </div>
             )}
             <div ref={chatEndRef} />
           </div>
@@ -298,7 +298,7 @@ export default function App() {
             onFileUpload={handleFileUpload}
             disabled={loading}
           />
-        </>
+        </main>
       )}
 
       {/* Confirmation Dialog */}

@@ -16,6 +16,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 import psutil
+from backend.config import settings
 from backend.database.models import Ticket, Incident
 
 logger = logging.getLogger(__name__)
@@ -101,7 +102,7 @@ def get_telemetry_metrics(db: Session) -> Dict[str, Any]:
         is_stale = True
 
     # SQLite file telemetry
-    db_file_path = "islm.db"
+    db_file_path = settings.DATABASE_URL.replace("sqlite:///", "")
     db_size_kb = 0.0
     try:
         if os.path.exists(db_file_path):

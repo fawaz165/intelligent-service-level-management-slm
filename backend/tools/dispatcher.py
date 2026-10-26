@@ -69,6 +69,19 @@ _ENTITY_HANDLERS = {
     "breaches": "sla_risk",
     "risk": "sla_risk",
     "risks": "sla_risk",
+    "database": "database_counts",
+    "database_counts": "database_counts",
+    "db_counts": "database_counts",
+    "tables": "database_counts",
+    "table_counts": "database_counts",
+    "record_counts": "database_counts",
+    "counts": "database_counts",
+    "sla_metrics": "sla_metrics",
+    "sla_metric": "sla_metrics",
+    "sla_summary": "sla_metrics",
+    "sla_kpis": "sla_metrics",
+    "sla_kpi": "sla_metrics",
+    "sla_dashboard": "sla_metrics",
     **{cat: "ticket" for cat in _CATEGORY_MAP},
 }
 
@@ -142,6 +155,14 @@ async def dispatch(intent: LLMIntent, db: Session) -> dict:
     if entity in ("user", "sla"):
         return _handle_readonly(entity, op, filters, db)
 
+    # ── DATABASE RECORD COUNTS ───────────────────────────────────────
+    if entity == "database_counts":
+        return _handle_database_counts(db)
+
+    # ── SLA GLOBAL METRICS ───────────────────────────────────────────
+    if entity == "sla_metrics":
+        return _handle_sla_metrics(db)
+
     return {
         "reply": f"I don't know how to work with '{entity}' yet. I can manage tickets, services, and files.",
         "data": None,
@@ -156,6 +177,36 @@ async def dispatch(intent: LLMIntent, db: Session) -> dict:
 # ═════════════════════════════════════════════════════════════════════════
 def _handle_incident(op, params, filters, record_id, intent, db):
     if op in ("READ", "SEARCH"):
+        # Single incident lookup by ID or incident code
+        target_id = record_id or filters.get("id") or filters.get("incident_id")
+        if target_id is not None:
+            inc = incident_service.get_incident(db, target_id)
+            if inc:
+                reply = (
+                    f"Found incident {inc['incident_id']}: \"{inc['title']}\"\n\n"
+                    f"- **Severity:** {inc['severity'].upper()}\n"
+                    f"- **Status:** {inc['status']}\n"
+                    f"- **Affected Service:** {inc.get('affected_service') or 'General'}\n"
+                    f"- **Affected Component:** {inc.get('affected_component') or 'Primary'}\n"
+                    f"- **Assigned To:** {inc.get('assigned_to') or 'Unassigned'}\n"
+                    f"- **Description:** {inc.get('description') or 'No description provided.'}"
+                )
+                return {
+                    "reply": reply,
+                    "data": [inc],
+                    "data_type": "incidents",
+                    "requires_confirmation": False,
+                    "pending_action": None,
+                }
+            else:
+                return {
+                    "reply": f"Incident '{target_id}' was not found in the database.",
+                    "data": [],
+                    "data_type": "incidents",
+                    "requires_confirmation": False,
+                    "pending_action": None,
+                }
+
         # Validate status if provided
         status_filter = filters.get("status")
         if status_filter:
@@ -299,6 +350,42 @@ def _handle_incident(op, params, filters, record_id, intent, db):
 # ═════════════════════════════════════════════════════════════════════════
 def _handle_ticket(op, params, filters, record_id, intent, db):
     if op in ("READ", "SEARCH"):
+        # Single ticket lookup by ID (Issue 1)
+        target_id = record_id or filters.get("id") or filters.get("ticket_id")
+        if target_id is not None:
+            try:
+                tid = int(target_id)
+            except (ValueError, TypeError):
+                tid = None
+
+            if tid is not None:
+                ticket = ticket_service.get_ticket(db, tid)
+                if ticket:
+                    reply = (
+                        f"Found ticket #{tid}: \"{ticket['title']}\"\n\n"
+                        f"- **Category:** {ticket['category']}\n"
+                        f"- **Priority:** {ticket['priority'].upper()}\n"
+                        f"- **Status:** {ticket['status']}\n"
+                        f"- **Assigned To:** {ticket.get('assignee_name') or 'Unassigned'}\n"
+                        f"- **Service:** {ticket.get('service_name') or 'General'}\n"
+                        f"- **Description:** {ticket.get('description') or 'No description provided.'}"
+                    )
+                    return {
+                        "reply": reply,
+                        "data": [ticket],
+                        "data_type": "tickets",
+                        "requires_confirmation": False,
+                        "pending_action": None,
+                    }
+                else:
+                    return {
+                        "reply": f"Ticket #{tid} was not found in the database.",
+                        "data": [],
+                        "data_type": "tickets",
+                        "requires_confirmation": False,
+                        "pending_action": None,
+                    }
+
         # Validate category if provided
         cat_filter = filters.get("category")
         if cat_filter:
@@ -770,23 +857,145 @@ async def _handle_sla_risk(op, params, filters, intent, db):
         risks = enriched + risks[3:]
 
     count = len(risks)
+    global_metrics = sla_service.get_sla_dashboard_metrics(db)
+    total_monitored = global_metrics["total_monitored"]
+    count = len(risks)
     breached_cnt = sum(1 for r in risks if r.get("is_breached"))
     crit_cnt = sum(1 for r in risks if r.get("risk_level") == "Critical")
 
     if count == 0:
-        reply = "No monitored items matching your SLA risk criteria were found."
+        if breached_only or (risk_level and risk_level.lower() in ("breached", "breach")):
+            reply = f"No breached items found (0 out of {total_monitored} active monitored items in the SLA system; global compliance rate is {global_metrics['compliance_rate']}%)."
+        elif risk_level and risk_level.lower() in ("at_risk", "at-risk", "at risk"):
+            reply = f"No at-risk items found (0 out of {total_monitored} active monitored items in the SLA system; global compliance rate is {global_metrics['compliance_rate']}%)."
+        elif risk_level and risk_level.lower() in ("healthy", "on_track", "on-track", "on track"):
+            reply = f"No healthy items found (0 out of {total_monitored} active monitored items in the SLA system; global compliance rate is {global_metrics['compliance_rate']}%)."
+        elif risk_level:
+            reply = f"No {risk_level.capitalize()}-risk items found matching your criteria (out of {total_monitored} active monitored items in the SLA system; global compliance rate is {global_metrics['compliance_rate']}%)."
+        else:
+            reply = f"No items matching your SLA criteria were found (out of {total_monitored} active monitored items in the system; global compliance rate is {global_metrics['compliance_rate']}%)."
+    elif breached_only or (risk_level and risk_level.lower() in ("breached", "breach")):
+        reply = (
+            f"Found {count} breached item{'s' if count != 1 else ''} "
+            f"(out of {total_monitored} active monitored items in the SLA system; global compliance rate is {global_metrics['compliance_rate']}%)."
+        )
+    elif risk_level and risk_level.lower() in ("at_risk", "at-risk", "at risk"):
+        reply = (
+            f"Found {count} at-risk item{'s' if count != 1 else ''} "
+            f"(out of {total_monitored} active monitored items in the SLA system; global compliance rate is {global_metrics['compliance_rate']}%)."
+        )
+    elif risk_level and risk_level.lower() in ("healthy", "on_track", "on-track", "on track"):
+        reply = (
+            f"Found {count} healthy / on-track item{'s' if count != 1 else ''} "
+            f"(out of {total_monitored} active monitored items in the SLA system; global compliance rate is {global_metrics['compliance_rate']}%)."
+        )
+    elif risk_level:
+        reply = (
+            f"Found {count} {risk_level.capitalize()}-risk item{'s' if count != 1 else ''} "
+            f"(out of {total_monitored} active monitored items in the SLA system; global compliance rate is {global_metrics['compliance_rate']}%)."
+        )
     else:
-        filter_desc = f"{risk_level.capitalize()}-risk " if risk_level else ""
         entity_desc = f"{entity_filter} " if entity_filter else ""
         reply = (
-            f"Found {count} {filter_desc}{entity_desc}monitored item{'s' if count != 1 else ''}. "
-            f"{breached_cnt} currently breached, {crit_cnt} at Critical risk."
+            f"Found {count} {entity_desc}monitored item{'s' if count != 1 else ''} in SLA risk monitoring: "
+            f"{breached_cnt} currently breached, {crit_cnt} at Critical risk "
+            f"(Global compliance rate: {global_metrics['compliance_rate']}% across {total_monitored} active items)."
         )
 
     return {
         "reply": reply,
         "data": risks,
         "data_type": "sla_risks",
+        "requires_confirmation": False,
+        "pending_action": None,
+    }
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# DATABASE RECORD COUNTS handler (Issue 2)
+# ═════════════════════════════════════════════════════════════════════════
+def _handle_database_counts(db: Session) -> dict:
+    from backend.database.models import Ticket, Incident, Service, User, SLA, File
+
+    ticket_cnt = db.query(Ticket).count()
+    service_cnt = db.query(Service).count()
+    user_cnt = db.query(User).count()
+    sla_cnt = db.query(SLA).count()
+    incident_cnt = db.query(Incident).count()
+    file_cnt = db.query(File).count()
+    total_cnt = ticket_cnt + service_cnt + user_cnt + sla_cnt + incident_cnt + file_cnt
+
+    data = [
+        {"table": "tickets", "count": ticket_cnt, "description": "Support tickets"},
+        {"table": "services", "count": service_cnt, "description": "Catalog services"},
+        {"table": "users", "count": user_cnt, "description": "System users"},
+        {"table": "sla", "count": sla_cnt, "description": "Service level agreement targets"},
+        {"table": "incidents", "count": incident_cnt, "description": "Production incidents"},
+        {"table": "files", "count": file_cnt, "description": "Stored file metadata records"},
+    ]
+
+    table_md = (
+        "| Database Table | Record Count | Description |\n"
+        "| :--- | :---: | :--- |\n"
+        f"| **tickets** | {ticket_cnt} | Support tickets |\n"
+        f"| **services** | {service_cnt} | Catalog services |\n"
+        f"| **users** | {user_cnt} | System users |\n"
+        f"| **sla** | {sla_cnt} | Service level agreement targets |\n"
+        f"| **incidents** | {incident_cnt} | Production incidents |\n"
+        f"| **files** | {file_cnt} | Stored file metadata records |\n"
+        f"| **Total** | **{total_cnt}** | **All database records** |"
+    )
+
+    reply = f"Current database record counts from SQLite (`islm_recovered.db`):\n\n{table_md}"
+
+    return {
+        "reply": reply,
+        "data": data,
+        "data_type": "database_counts",
+        "requires_confirmation": False,
+        "pending_action": None,
+    }
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# SLA GLOBAL METRICS handler (Issue 3 & 4)
+# ═════════════════════════════════════════════════════════════════════════
+def _handle_sla_metrics(db: Session) -> dict:
+    metrics = sla_service.get_sla_dashboard_metrics(db)
+
+    total_monitored = metrics["total_monitored"]
+    breached_count = metrics["breached_count"]
+    at_risk_count = metrics["at_risk_count"]
+    imminent_breach_count = metrics["imminent_breach_count"]
+    high_risk_count = metrics["high_risk_count"]
+    healthy_count = metrics["healthy_count"]
+    compliant_count = metrics["compliant_count"]
+    compliance_rate = metrics["compliance_rate"]
+    total_all = metrics["total_all_records"]
+    resolved_count = metrics["resolved_count"]
+
+    # Mutually exclusive partition: breached_count + at_risk_count + healthy_count == total_monitored
+    data = [
+        {"metric": "Total Monitored Items", "value": str(total_monitored), "status": "Active"},
+        {"metric": "Breached Items", "value": str(breached_count), "status": "Breached" if breached_count > 0 else "Compliant"},
+        {"metric": "At Risk Items", "value": f"{at_risk_count} ({imminent_breach_count} Critical imminent, {high_risk_count} High)", "status": "At Risk" if at_risk_count > 0 else "Healthy"},
+        {"metric": "Healthy / On-Track Items", "value": str(healthy_count), "status": "Healthy"},
+        {"metric": "Overall Compliance Rate", "value": f"{compliance_rate}%", "status": "Compliant" if compliance_rate >= 90.0 else "Degraded"},
+        {"metric": "Compliant Items", "value": str(compliant_count), "status": "Compliant"},
+        {"metric": "Total System Records", "value": f"{total_all} ({resolved_count} resolved/closed)", "status": "Total"},
+    ]
+
+    # Clean prose introductory reply with NO raw markdown table syntax (rendered by DataTable in UI)
+    reply = (
+        f"Global SLA Metrics Summary across {total_monitored} active monitored items: "
+        f"{breached_count} breached, {at_risk_count} at risk, and {healthy_count} healthy/on-track. "
+        f"Overall compliance rate is {compliance_rate}%."
+    )
+
+    return {
+        "reply": reply,
+        "data": data,
+        "data_type": "sla_metrics",
         "requires_confirmation": False,
         "pending_action": None,
     }

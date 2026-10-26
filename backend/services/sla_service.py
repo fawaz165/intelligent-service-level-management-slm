@@ -1233,6 +1233,10 @@ def get_all_sla_risks(
         norm_rf = risk_filter.strip().lower()
         if norm_rf in ("breached", "breach"):
             results = [r for r in results if r["is_breached"]]
+        elif norm_rf in ("at_risk", "at-risk", "at risk"):
+            results = [r for r in results if not r["is_breached"] and r["risk_level"] in ("Critical", "High")]
+        elif norm_rf in ("healthy", "on_track", "on-track", "on track"):
+            results = [r for r in results if not r["is_breached"] and r["risk_level"] in ("Medium", "Low")]
         else:
             results = [r for r in results if r["risk_level"].lower() == norm_rf]
 
