@@ -46,7 +46,7 @@ _INTENT_SCHEMA = {
             "type": "string",
             "enum": [
                 "ticket", "incident", "service", "user", "sla", "file",
-                "database_counts", "sla_metrics",
+                "database_counts", "sla_metrics", "telemetry",
             ],
         },
         "parameters": {
@@ -116,7 +116,13 @@ _STATUSES = {
 }
 
 # Words that signal "show me data" (READ intent)
-_READ_KEYWORDS = {"show", "list", "get", "view", "display", "fetch", "see", "find", "search", "all", "records", "count", "total", "how"}
+_READ_KEYWORDS = {
+    "show", "list", "get", "view", "display", "fetch", "see", "find",
+    "search", "all", "records", "count", "total", "how", "what",
+    "analyze", "troubleshoot", "recommend", "examine", "diagnose",
+    "investigate", "details", "explain", "check", "inspect", "review",
+    "status", "read", "evaluate", "breakdown"
+}
 
 # Words that signal tickets vs incidents
 _TICKET_SYNONYMS = {"ticket", "tickets", "issue", "issues", "case", "cases", "request", "requests"}
@@ -133,7 +139,29 @@ _ENTITY_KEYWORDS = {
     "user": "user", "users": "user",
     "sla": "sla", "slas": "sla",
     "file": "file", "files": "file",
+    "telemetry": "telemetry",
 }
+
+
+def _is_telemetry_query(msg_lower: str, words: set) -> bool:
+    """
+    Determine if a natural language query is asking about host or network telemetry
+    (latency, packet loss, CPU/RAM utilization, real vs simulated measurements).
+    """
+    telemetry_terms = {
+        "telemetry", "latency", "ping", "packet_loss", "loopback"
+    }
+    if bool(words & telemetry_terms):
+        return True
+    if any(p in msg_lower for p in [
+        "packet loss", "packet-loss", "network latency", "ping time", "response time",
+        "real measurement", "real measurements", "simulated telemetry", "live telemetry",
+        "host metrics", "network metrics", "cpu usage", "ram usage", "memory usage"
+    ]):
+        return True
+    if "measurements" in words and any(w in words for w in ["real", "simulated", "current", "network", "system"]):
+        return True
+    return False
 
 
 def _is_sla_metrics_query(msg_lower: str, words: set) -> bool:
@@ -192,7 +220,22 @@ def _try_deterministic_parse(user_message: str) -> Optional[LLMIntent]:
 
     # ── Detect intent type ───────────────────────────────────────────
     is_read = bool(words & _READ_KEYWORDS) or any(p in msg_lower for p in ["how many", "what are", "count of", "number of"])
-    is_create = any(kw in msg_lower for kw in ["create", "add", "new", "make", "open a", "raise"])
+    has_explicit_item_id = bool(
+        re.search(r'tickets?\s*(?:id|#)?\s*[:#]?\s*(\d+)', msg_lower)
+        or re.search(r'(?:ticket|record)\s+(?:with\s+)?(?:id|#)\s*[:#]?\s*(\d+)', msg_lower)
+        or re.search(r'\b(inc-\d{8}-\d{3})\b', msg_lower, re.IGNORECASE)
+    )
+    # Never create a ticket unless the user explicitly requests ticket creation
+    is_create = (
+        not has_explicit_item_id
+        and any(kw in msg_lower for kw in [
+            "create ticket", "create a ticket", "add ticket", "add a ticket",
+            "new ticket", "open ticket", "open a ticket", "raise ticket",
+            "raise a ticket", "file ticket", "file a ticket", "submit ticket",
+            "create incident", "create service", "create a service", "add service",
+            "open a new", "raise a new", "file a new", "submit a new"
+        ])
+    )
     is_delete = any(kw in msg_lower for kw in ["delete", "remove", "drop"])
     is_update = any(kw in msg_lower for kw in ["update", "change", "modify", "edit", "set", "assign", "close", "resolve"])
 
@@ -205,6 +248,17 @@ def _try_deterministic_parse(user_message: str) -> Optional[LLMIntent]:
             filters=None,
             record_id=None,
             message="Hello! I am your ISLM assistant. I can help you query tickets, incidents, services, SLA metrics, database counts, and files. What would you like to do?",
+        )
+
+    # ── 0. Detect telemetry query (Issue 2) ──────────────────────────
+    if _is_telemetry_query(msg_lower, words):
+        return LLMIntent(
+            operation="READ",
+            entity="telemetry",
+            parameters=None,
+            filters=None,
+            record_id=None,
+            message="Retrieving system and network telemetry metrics.",
         )
 
     # ── 1. Detect database record-count intent (Issue 2) ─────────────
@@ -365,7 +419,40 @@ def _try_deterministic_parse(user_message: str) -> Optional[LLMIntent]:
 
     # ── BUILD THE INTENT ─────────────────────────────────────────────
 
-    # READ operations (most common)
+    # 1. Explicit single ticket ID lookup or troubleshooting/analysis request:
+    # Must NEVER create a ticket; if not delete or update, ALWAYS READ ticket
+    if ticket_id_match and not (is_delete or is_update):
+        tid = int(ticket_id_match.group(1))
+        is_troubleshoot = any(
+            w in msg_lower for w in [
+                "analyz", "troubleshoot", "recommend", "step", "fix",
+                "diagnos", "investigat", "guidanc", "action"
+            ]
+        )
+        filters = {"id": tid}
+        if is_troubleshoot:
+            filters["troubleshoot"] = True
+        return LLMIntent(
+            operation="READ",
+            entity="ticket",
+            parameters=None,
+            record_id=tid,
+            filters=filters,
+            message=f"Retrieving and analyzing ticket #{tid} details." if is_troubleshoot else f"Retrieving ticket #{tid} details.",
+        )
+
+    # 2. Explicit incident code lookup:
+    if target_incident_code and not (is_delete or is_update):
+        return LLMIntent(
+            operation="READ",
+            entity="incident",
+            parameters=None,
+            record_id=None,
+            filters={"incident_id": target_incident_code},
+            message=f"Retrieving incident {target_incident_code} details.",
+        )
+
+    # General READ operations
     if is_read and entity:
         filters = {}
         if record_id is not None:
@@ -642,19 +729,57 @@ def _post_validate_llm_intent(intent: LLMIntent, user_message: str) -> LLMIntent
         intent.message = "Retrieving global SLA performance and compliance dashboard metrics."
         return intent
 
-    # Guard 3: Single ticket lookup by ID (Issue 1)
+    # Guard 3: Telemetry queries (Issue 2)
+    if _is_telemetry_query(msg_lower, words):
+        intent.operation = "READ"
+        intent.entity = "telemetry"
+        intent.filters = None
+        intent.record_id = None
+        intent.message = "Retrieving system and network telemetry metrics."
+        return intent
+
+    # Guard 4: Single ticket lookup or troubleshooting by ID (Issue 1)
+    # Must NEVER create a ticket; if not delete/update, ALWAYS force READ
     ticket_id_match = re.search(r'tickets?\s*(?:id|#)?\s*[:#]?\s*(\d+)', msg_lower)
     if not ticket_id_match and ("ticket" in words or "tickets" in words or intent.entity == "ticket"):
         ticket_id_match = re.search(r'\b(?:id|#)\s*[:#]?\s*(\d+)\b', msg_lower)
-    if ticket_id_match and intent.operation == "READ":
+    if ticket_id_match and intent.operation not in ("DELETE", "UPDATE"):
         tid = int(ticket_id_match.group(1))
+        is_troubleshoot = any(
+            w in msg_lower for w in [
+                "analyz", "troubleshoot", "recommend", "step", "fix",
+                "diagnos", "investigat", "guidanc", "action"
+            ]
+        )
+        intent.operation = "READ"
         intent.entity = "ticket"
         intent.record_id = tid
         if not intent.filters:
             intent.filters = {}
         intent.filters["id"] = tid
-        intent.message = f"Retrieving ticket #{tid} details."
+        if is_troubleshoot:
+            intent.filters["troubleshoot"] = True
+        intent.message = f"Retrieving and analyzing ticket #{tid} details." if is_troubleshoot else f"Retrieving ticket #{tid} details."
         return intent
+
+    # Guard 5: Prevent unintended ticket creation (It must never create a ticket unless explicitly requested)
+    if intent.operation == "CREATE" and intent.entity == "ticket":
+        explicit_ticket_create = any(
+            kw in msg_lower for kw in [
+                "create ticket", "create a ticket", "add ticket", "add a ticket",
+                "new ticket", "open ticket", "open a ticket", "raise ticket",
+                "raise a ticket", "file ticket", "file a ticket", "submit ticket",
+                "submit a ticket", "create new ticket", "open a new ticket"
+            ]
+        )
+        if not explicit_ticket_create:
+            logger.warning("Post-validate override: Blocked unintended ticket creation. Overriding to READ.")
+            deterministic = _try_deterministic_parse(user_message)
+            if deterministic:
+                return deterministic
+            intent.operation = "READ"
+            intent.message = "Retrieving ticket details."
+            return intent
 
     is_read = bool(words & _READ_KEYWORDS)
 
@@ -679,7 +804,7 @@ def _post_validate_llm_intent(intent: LLMIntent, user_message: str) -> LLMIntent
             return deterministic
 
     # Fix #3: Incident vs Ticket strict differentiation
-    if intent.entity not in ("database_counts", "database", "sla_metrics", "sla_risk"):
+    if intent.entity not in ("database_counts", "database", "sla_metrics", "sla_risk", "telemetry"):
         if "incident" in words or "incidents" in words:
             if intent.entity != "incident":
                 intent.entity = "incident"

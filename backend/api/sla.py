@@ -22,9 +22,12 @@ class PredictRequest(BaseModel):
 # ── SLA Risk & Metrics Endpoints (MUST precede /{sla_id}) ─────────────────
 
 @router.get("/metrics")
-def get_sla_metrics(db: Session = Depends(get_db)):
+def get_sla_metrics(
+    ref_time: Optional[str] = Query(None, description="Optional ISO timestamp or 'baseline' for deterministic evaluation"),
+    db: Session = Depends(get_db),
+):
     """Return aggregate SLA dashboard metrics."""
-    return sla_service.get_sla_dashboard_metrics(db)
+    return sla_service.get_sla_dashboard_metrics(db, ref_time=ref_time)
 
 
 @router.get("/telemetry")
@@ -40,6 +43,7 @@ def get_sla_risks(
     service: Optional[str] = Query(None, description="Filter by service name"),
     breached_only: bool = Query(False, description="Show only breached records"),
     include_resolved: bool = Query(False, description="Include resolved/closed records"),
+    ref_time: Optional[str] = Query(None, description="Optional ISO timestamp or 'baseline' for deterministic evaluation"),
     db: Session = Depends(get_db),
 ):
     """Return evaluated SLA risks for monitored active tickets and incidents."""
@@ -50,6 +54,7 @@ def get_sla_risks(
         service_filter=service,
         breached_only=breached_only,
         include_resolved=include_resolved,
+        ref_time=ref_time,
     )
 
 

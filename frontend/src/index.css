@@ -301,6 +301,18 @@ body {
   align-self: flex-start;
 }
 
+.message.ai:has(.data-table-wrapper),
+.message.ai:has(.table-reveal) {
+  max-width: 100%;
+  width: 100%;
+}
+
+.message-body:has(.data-table-wrapper),
+.message-body:has(.table-reveal) {
+  width: 100%;
+  min-width: 0;
+}
+
 .message-avatar {
   width: 32px;
   height: 32px;
@@ -462,9 +474,14 @@ body {
 .action-text-wrapper {
   white-space: normal;
   word-break: break-word;
+  overflow-wrap: anywhere;
   line-height: 1.5;
-  font-size: 12px;
+  font-size: 12.5px;
   color: #f1f5f9;
+  background: rgba(30, 41, 59, 0.55);
+  padding: 8px 12px;
+  border-radius: var(--radius-sm, 6px);
+  border-left: 3px solid var(--accent, #6366f1);
 }
 
 .data-table th.col-title,
@@ -1723,12 +1740,18 @@ body {
 
 /* ── Responsive Refinements ────────────────────────────────────────── */
 @media (max-width: 1024px) {
+  .message.ai:has(.data-table-wrapper),
+  .message.ai:has(.table-reveal) {
+    max-width: 100%;
+    width: 100%;
+  }
+
   .data-table th.col-recommended_action,
   .data-table td.col-recommended_action,
   .data-table th.col-action,
   .data-table td.col-action {
-    min-width: 200px;
-    max-width: 320px;
+    min-width: 250px;
+    max-width: 440px;
   }
 
   .data-table th.col-title,
@@ -1771,6 +1794,11 @@ body {
     width: auto;
   }
 
+  .data-table-wrapper {
+    margin-top: 6px;
+    border-radius: var(--radius-sm, 6px);
+  }
+
   .data-table th,
   .data-table td {
     padding: 8px 10px;
@@ -1781,8 +1809,14 @@ body {
   .data-table td.col-recommended_action,
   .data-table th.col-action,
   .data-table td.col-action {
-    min-width: 180px;
-    max-width: 260px;
+    min-width: 240px;
+    max-width: 380px;
+  }
+
+  .action-text-wrapper {
+    font-size: 11.5px;
+    padding: 6px 10px;
+    line-height: 1.45;
   }
 
   .data-table th.col-title,

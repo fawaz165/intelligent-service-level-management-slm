@@ -67,6 +67,13 @@ const COLUMN_CONFIG = {
     { key: 'value', label: 'Value' },
     { key: 'status', label: 'Status', badge: true },
   ],
+  telemetry: [
+    { key: 'metric', label: 'Metric' },
+    { key: 'value', label: 'Measurement' },
+    { key: 'type', label: 'Type', badge: true },
+    { key: 'status', label: 'Status', badge: true },
+    { key: 'source', label: 'Source' },
+  ],
 };
 
 function truncate(text, max) {

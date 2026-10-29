@@ -16,7 +16,7 @@ Responsibilities:
 import re
 import logging
 from datetime import datetime, timezone, timedelta
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Union
 from sqlalchemy.orm import Session
 
 from backend.database.models import Ticket, Incident, Service, SLA, User
@@ -1119,6 +1119,22 @@ SAMPLE_INCIDENT_OFFSETS = {
 }
 
 
+def get_anchor_reference_time(db: Session) -> datetime:
+    """
+    Return the calibrated baseline reference timestamp corresponding to the
+    exact moment the sample dataset was anchored (Ticket #8 at 14m elapsed).
+    Evaluating at this reference timestamp yields deterministic baseline metrics:
+    18 monitored, 1 breached, 5 at risk (1 imminent, 4 high), 12 healthy, 94.4% compliance.
+    """
+    sample_t8 = db.query(Ticket).filter(Ticket.id == 8).first()
+    if sample_t8 and sample_t8.created_at:
+        t8_dt = sample_t8.created_at
+        if t8_dt.tzinfo is None:
+            t8_dt = t8_dt.replace(tzinfo=timezone.utc)
+        return t8_dt + timedelta(minutes=SAMPLE_TICKET_OFFSETS.get(8, 14))
+    return datetime.now(timezone.utc)
+
+
 def ensure_sample_telemetry_anchored(db: Session, ref_time: Optional[datetime] = None) -> None:
     """
     Ensure the baseline sample dataset (Tickets 1..15 and Incidents 1..8) maintains
@@ -1198,11 +1214,20 @@ def get_all_sla_risks(
     service_filter: Optional[str] = None,
     breached_only: bool = False,
     include_resolved: bool = False,
-    ref_time: Optional[datetime] = None,
+    ref_time: Optional[Union[datetime, str]] = None,
 ) -> List[dict]:
     """
     Retrieve and evaluate SLA risks for all open/active tickets and incidents.
     """
+    if isinstance(ref_time, str):
+        if ref_time.strip().lower() == "baseline":
+            ref_time = get_anchor_reference_time(db)
+        else:
+            try:
+                ref_time = datetime.fromisoformat(ref_time)
+            except ValueError:
+                ref_time = None
+
     if ref_time is None:
         ensure_sample_telemetry_anchored(db)
 
@@ -1267,10 +1292,19 @@ def get_all_sla_risks(
     return results
 
 
-def get_sla_dashboard_metrics(db: Session, ref_time: Optional[datetime] = None) -> dict:
+def get_sla_dashboard_metrics(db: Session, ref_time: Optional[Union[datetime, str]] = None) -> dict:
     """
     Compute aggregate summary metrics across all monitored active items.
     """
+    if isinstance(ref_time, str):
+        if ref_time.strip().lower() == "baseline":
+            ref_time = get_anchor_reference_time(db)
+        else:
+            try:
+                ref_time = datetime.fromisoformat(ref_time)
+            except ValueError:
+                ref_time = None
+
     active_risks = get_all_sla_risks(db, include_resolved=False, ref_time=ref_time)
     all_items = get_all_sla_risks(db, include_resolved=True, ref_time=ref_time)
 
