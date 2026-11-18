@@ -16,7 +16,11 @@
 
 Modern IT organizations struggle with ticket prioritization, SLA breach prevention, and rapid incident response. Commercial LLMs introduce data-privacy risks, high operational costs, and unpredictability (hallucinations). 
 
-**ISLM** solves this by pairing a lightweight, locally deployed Small Language Model (SLM) with a deterministic, authoritative relational backend. Numerical calculations (elapsed time, remaining deadlines, SLA percentages, breach classifications) are strictly calculated by Python and SQLite, while the SLM provides contextual reasoning, intent parsing, and domain runbook-grounded troubleshooting plans.
+**ISLM** solves this by pairing a lightweight, locally deployed Small Language Model (SLM) with a deterministic, authoritative relational backend. DeepSeek-R1 1.5B has two distinct operational responsibilities:
+1. **Natural-Language Intent Interpretation (ITSM Chatbot):** Translates freeform user prompts into structured JSON intents (`operation`, `entity`, `filters`, `record_id`). FastAPI validates those intents and executes parameterized SQLAlchemy ORM operations.
+2. **Qualitative SLA Risk Synthesis (AI Modal):** Receives authoritative pre-calculated numerical metrics from SQLite, live host telemetry, and domain runbook procedures to generate qualitative root-cause explanations and structured troubleshooting plans.
+
+The SLM does not directly execute SQL, independently modify database records, or autonomously perform ITSM operations. Numerical calculations (elapsed time, remaining deadlines, SLA percentages, breach classifications) are strictly computed by Python and SQLite, while the SLM provides contextual reasoning, intent parsing, and domain runbook-grounded troubleshooting plans.
 
 ---
 
@@ -31,7 +35,7 @@ Modern IT organizations struggle with ticket prioritization, SLA breach preventi
 
 ## 3. Project Objectives
 
-- **100% Deterministic SLA Accuracy:** Ensure all countdowns, breach statuses, percentages, and metrics displayed in dashboards and AI modals derive from a single authoritative SQLite source.
+- **100% Structured SLA Field Consistency with SQLite Values:** Ensure all structured numerical and status fields (elapsed time, remaining deadlines, SLA percentages, and breach classifications) in the AI Risk Synthesis match authoritative SQLite-derived values with 100% consistency, eliminating mathematical hallucinations (this refers specifically to structured numerical and status field consistency with SQLite facts, not overall unconstrained SLM semantic accuracy).
 - **Privacy-Preserving On-Premises SLM:** Run DeepSeek-R1 1.5B entirely on local CPU/RAM via Ollama without cloud telemetry or data leakage.
 - **Domain Runbook-Grounded Troubleshooting:** Ground AI recommendations directly in verified SRE procedures and operational runbooks rather than speculative generative answers.
 - **Fail-Safe Operational Resilience:** Implement sub-3-second fallback mechanisms that guarantee uninterrupted dashboard functionality and technical action plans even if the local SLM daemon is offline or times out.
@@ -92,88 +96,122 @@ flowchart TD
     DeepSeek --> Runbooks
 ```
 
+### Security & Intent Dispatching
+
+```
+User Query → Intent Classifier / Dispatcher → Service Layer → Parameterized SQLAlchemy ORM → SQLite DB
+```
+
+* **Safe Execution:** DeepSeek-R1 1.5B interprets natural-language requests and generates structured intents (`operation`, `entity`, `filters`, `record_id`). The SLM does **not** directly execute SQL, independently modify database records, or autonomously perform ITSM operations.
+* **Backend Validation:** FastAPI receives and validates all intents against strict Pydantic schemas, executing only safe, parameterized SQLAlchemy ORM queries against the SQLite database.
+* **Destructive Safety Protocol:** Destructive operations (such as ticket deletion, service removal, or file deletion) require explicit user confirmation and backend validation before execution.
+
 ---
 
 ## 5. Technology Stack
 
-| Component | Technology | Version | Purpose |
+| Layer | Technology | Version | Description |
 | :--- | :--- | :--- | :--- |
-| **Frontend Framework** | React | 19.2.x | High-performance user interface, component state management |
-| **Build Tool** | Vite | 8.2.x | Ultra-fast HMR and production bundle optimization |
-| **Styling** | Vanilla CSS3 | Modern CSS | Glassmorphism aesthetics, responsive CSS Grid / Flexbox |
-| **Backend Framework** | FastAPI | 0.110+ | Asynchronous REST API, OpenAPI docs, Pydantic validation |
-| **ASGI Server** | Uvicorn | 0.28+ | High-throughput asynchronous server |
-| **Database Engine** | SQLite 3 | WAL Mode | Zero-configuration ACID transactional persistence |
-| **ORM Layer** | SQLAlchemy | 2.0+ | Parameterized SQL queries, type-safe data modeling |
-| **Local SLM Engine** | Ollama | Latest | Local model hosting, OpenAI-compatible REST API |
-| **Model** | DeepSeek-R1:1.5B | Q4_K_M GGUF | Qualitative reasoning, incident analysis, intent parsing |
-| **Host Telemetry** | psutil | 5.9+ | Real-time host CPU, virtual memory, and process statistics |
+| **Frontend** | React + Vite | React 19.2 / Vite 8.2 | Responsive layout, glassmorphism UI, tabbed dashboard navigation |
+| **Backend** | Python & FastAPI | Python 3.10+ / FastAPI 0.115 | Asynchronous REST API, CORS-enabled, strict Pydantic schemas |
+| **Database** | SQLite 3 + SQLAlchemy | SQLAlchemy 2.0 | Relational schema with 6 tables (`users`, `services`, `tickets`, `sla`, `incidents`, `files`) |
+| **Local SLM** | DeepSeek-R1:1.5B via Ollama | Q4_K_M GGUF | Local qualitative root-cause synthesis, incident runbook matching, intent classification |
+| **Telemetry** | `psutil` + Sockets + DB Probes | psutil 6.1+ | Real host telemetry (CPU, RAM, loopback, SQLite latency) paired with labeled simulated indicators |
 
 ---
 
 ## 6. Main Modules and Features
 
 ### 6.1 Real-Time SLA Monitoring Dashboard
-- **Mutually Exclusive SLA Partitioning:** Guaranteed zero-overlap categorization:
+* **Mutually Exclusive SLA Partitioning:** Active items are strictly partitioned into mutually exclusive subsets:
   $$\text{Total Monitored} = \text{Breached} + \text{At Risk} + \text{Healthy}$$
   $$\text{Compliance Rate} = \frac{\text{Total Monitored} - \text{Breached}}{\text{Total Monitored}} \times 100$$
-- **Synchronized Evaluation Clocks:** Dashboard cards and AI modals share the exact evaluation reference timestamp to eliminate clock drift.
-- **Incident & Ticket Monitoring:** Tracks both reactive end-user support tickets and infrastructure incidents.
+* **Synchronized Evaluation Clocks:** Dashboard cards and AI modals share the exact evaluation reference timestamp to eliminate clock drift.
+* **Incident & Ticket Monitoring:** Tracks both reactive end-user support tickets and infrastructure incidents.
 
 ### 6.2 Host & IT Infrastructure Telemetry
-- **Real Host Telemetry (Live):** Localhost TCP socket latency, SQLite query response latency (`SELECT 1`), host CPU utilization percentage, and virtual memory consumption.
-- **Correlated Simulated IT Telemetry:** Clearly labeled simulated indicators (WAN latency, packet loss, Cisco router status, Redis cache disk capacity, replication lag) dynamically correlated with active incidents.
+* **Real Host Telemetry (Live):** Localhost TCP socket latency, SQLite query response latency (`SELECT 1`), host CPU utilization percentage (`psutil`), and virtual memory consumption.
+* **Correlated Simulated IT Telemetry:** Clearly labeled simulated indicators (`[Simulated]`) representing network WAN latency, packet loss, Cisco router status, switch CRC errors, Redis cache disk capacity, database replication lag, and backup verification — dynamically correlated with active SQLite incident and ticket records.
 
 ### 6.3 Domain Runbook-Grounded SLM
-- **Factual Grounding:** Numerical SLA calculations are injected from SQLite into the SLM prompt, preventing numerical hallucinations.
-- **Structured 6-Part AI Synthesis:**
+* **Factual Grounding:** Numerical SLA calculations are injected from SQLite into the SLM prompt, preventing numerical hallucinations.
+* **Structured 6-Part AI Synthesis:**
   1. Authoritative SLA Factsheet (SQLite-derived)
   2. Observed Telemetry Context
   3. SLM Hypothesis (clearly demarcated as unverified)
   4. Specific Troubleshooting Steps (grounded in the verified runbook)
   5. Preventive Recommendations
   6. Confidence Score & Human Verification Notice
-- **Resolved Incident Protocol:** When inspecting resolved incidents, the SLM automatically pivots to historical compliance reviews and post-mortem recommendations.
+* **Resolved Incident Protocol:** When inspecting resolved incidents, the SLM automatically pivots to historical compliance reviews and post-mortem recommendations.
 
 ### 6.4 Conversational ITSM Assistant
-- **Safe Parameterized Dispatch:** Translates natural-language operational requests into safe ORM operations.
-- **Two-Phase Confirmation Protocol:** Destructive operations (`DELETE`, record termination) require explicit user confirmation before execution.
+* **Safe Parameterized Dispatch:** Translates natural-language operational requests into safe ORM operations.
+* **Two-Phase Confirmation Protocol:** Destructive operations (`DELETE`, record termination) require explicit user confirmation and backend validation before execution.
 
 ---
 
 ## 7. How the Small Language Model Works
 
+The Small Language Model (DeepSeek-R1 1.5B) is decoupled into two independent, task-specific pipelines:
+
+### 7.1 Responsibility A: Natural-Language Intent Interpretation (Chat Assistant)
 ```
-User Action / Incident Inspection
+User Prompt (e.g. "Show breached SLA items only")
                │
                ▼
-   authoritative SQLite Evaluation
-   (Elapsed time, remaining time, SLA %)
+   Regex Pre-Filter & Fast-Path Routing
                │
                ▼
-   Telemetry Context Assembly
-   (Validated host & network metrics)
+   DeepSeek-R1 1.5B via Ollama (JSON Schema Mode)
+   (Outputs: operation, entity, filters, record_id)
                │
                ▼
-   Domain Runbook Retrieval
-   (Matching incident category to runbook)
+   FastAPI Intent Validation (Pydantic Schemas)
                │
                ▼
-   Strict System Prompt Construction
-   (Instructions + Factual Invariants)
+   Parameterized SQLAlchemy ORM Dispatcher
+   (Safe, read-only or confirmed execution)
+               │
+               ▼
+   Structured JSON Response Rendered as UI Table / Chat Bubble
+```
+* The SLM never generates raw SQL.
+* It outputs strictly structured intent parameters that are validated by FastAPI before execution.
+* Destructive actions (`DELETE`, file deletion) trigger a mandatory two-phase confirmation step.
+
+### 7.2 Responsibility B: Qualitative SLA Risk Synthesis (AI Modal)
+```
+User Action: Click "AI Risk Synthesis" on Dashboard Card
+               │
+               ▼
+   Authoritative SQLite Fact Evaluation
+   (Elapsed time, remaining time, SLA % calculated in Python)
+               │
+               ▼
+   Live Host & Correlated Telemetry Assembly
+   (psutil metrics + labeled simulated network indicators)
+               │
+               ▼
+   Domain SRE Runbook Retrieval
+   (Matching affected service/component to verified runbook)
+               │
+               ▼
+   Strict System Prompt Construction (Facts + Rules)
                │
                ▼
    Local Inference via Ollama (DeepSeek-R1:1.5B)
    ┌───────────────────────┬───────────────────────┐
    │ Success (< 120s)      │ Daemon Offline / Timeout
    ▼                       ▼
-Structured Synthesis    Dual Fallback Engine
-(6 Standard Sections)   (Deterministic Runbook Injected)
+Structured 6-Part       Dual Fallback Engine
+Qualitative Synthesis   (Deterministic Runbook Injected)
                │                       │
                └───────────┬───────────┘
                            ▼
-             Rendered in UI Modal
+             Rendered in Dashboard Modal
 ```
+* **Structured Field Anchoring:** Numerical facts (timestamps, remaining minutes, breach percentage) are hard-bound to authoritative SQLite data.
+* **Resolved Incident Protocol:** When inspecting resolved incidents, the model automatically pivots to post-resolution reviews rather than raising active breach alarms.
 
 ---
 
@@ -184,10 +222,10 @@ DeepSeek-R1:1.5B is a compact, reasoning-optimized Small Language Model based on
 
 ### Benchmark & Evaluation Highlights
 Based on our experimental evaluation across 12 live operational test cases:
-- **Mean Inference Latency:** 55.5 seconds on commodity 4-core/8-thread CPUs.
-- **SLA Factual Parity:** 100.0% agreement between model text and SQLite facts.
-- **Completeness:** 100.0% generation of all required technical sections.
-- **Fallback Speed:** Immediate 2.1s recovery when Ollama is offline; 1.8s recovery on timeout.
+* **Mean Inference Latency:** 55.501s across 12 operational test cases on a 4-core/8-thread CPU (Min: 40.373s, Max: 77.208s, Median: 59.466s).
+* **Structured SLA Field Consistency:** 100.0% numerical and status alignment between structured modal fields and SQLite facts (eliminating mathematical hallucinations). This metric measures structured numerical consistency with backend facts, not open-ended semantic text accuracy.
+* **Response Completeness:** 100.0% generation of all 6 required structured technical sections across all test runs.
+* **Fallback Resilience Latency:** 2.164s recovery on connection refusal (when Ollama daemon is offline). In our experimental fault-injection harness, timeout fallback completed in 1.817s under a deliberately shortened 1.5s client test timeout (configured to rapidly verify graceful degradation; standard production client timeout is 120.0s).
 
 ---
 
@@ -204,6 +242,12 @@ The system persists data in SQLite with Write-Ahead Logging (`WAL`) mode and for
 | `sla` | `id`, `service_id`, `priority`, `response_time`, `resolution_time` | Service level commitments and resolution targets |
 | `files` | `id`, `file_name`, `file_path`, `file_size`, `uploaded_by` | Operational runbooks, diagnostic logs, and post-mortems |
 
+### Database Configuration & Integrity
+* **Configurable Connection:** The database connection is configurable through the `DATABASE_URL` environment variable in `.env` (e.g. `DATABASE_URL=sqlite:///./islm_recovered.db` or `DATABASE_URL=sqlite:///./islm.db`), resolved dynamically by `backend/config.py`.
+* **Zero Machine Drift:** Uses relative or environment-provided URLs so the repository can be cloned on any computer without hardcoded paths.
+* **Integrity Checked:** Passes SQLite `PRAGMA integrity_check;` with result `ok`.
+* **Idempotent Seeding Behavior:** Database seeding (`python -m backend.database.seed`) populates sample incidents, users, services, tickets, and SLAs only when the corresponding database tables are empty (`Incident.count() == 0`). If existing records are detected, seeding safely skips insertion. To ensure a clean baseline demonstration, it is recommended to use a fresh development database (e.g. configuring `DATABASE_URL=sqlite:///./islm.db` in `.env` or removing prior test databases).
+
 ---
 
 ## 10. Installation Prerequisites
@@ -218,14 +262,14 @@ Ensure the following tools are installed on your Windows computer:
 
 ## 11. Environment Variable Configuration
 
-Create your local `.env` configuration file from the template:
+Create your local `.env` configuration file from the provided template:
 
 ```bash
 # In the project root directory
 copy .env.example .env
 ```
 
-Your `.env` file contains:
+The `.env.example` file provides clean default values:
 
 ```ini
 # Database Connection (uses SQLite relative path)
@@ -240,6 +284,8 @@ STORAGE_PATH=./storage
 MAX_FILE_SIZE_MB=10
 ALLOWED_FILE_TYPES=.pdf,.doc,.docx,.txt,.csv,.xlsx,.png,.jpg,.jpeg,.log,.json,.xml
 ```
+
+> **Security Note:** `.env` and SQLite database files (`*.db`, `*.db-shm`, `*.db-wal`) are strictly excluded from version control via `.gitignore` to prevent exposing local paths, credentials, or private operational data.
 
 ---
 
@@ -271,6 +317,7 @@ ALLOWED_FILE_TYPES=.pdf,.doc,.docx,.txt,.csv,.xlsx,.png,.jpg,.jpeg,.log,.json,.x
    ```powershell
    python -m backend.database.seed
    ```
+   *(Note: The seeder populates sample incidents, users, services, tickets, and SLAs only when the incident table is empty. To demonstrate a clean baseline, it is recommended to run against a fresh development database, e.g. configuring `DATABASE_URL=sqlite:///./islm.db` in `.env` or removing prior test databases).*
 3. Start the FastAPI backend server:
    ```powershell
    python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000 --reload
@@ -310,7 +357,7 @@ python -m pytest
 Expected output:
 ```
 tests\test_backend.py ......                                             [100%]
-============================== 6 passed in 5.73s ==============================
+============================== 6 passed in 5.45s ==============================
 ```
 
 ### 15.2 Frontend Build & Lint Verification
@@ -328,7 +375,123 @@ npm run build
 
 ---
 
-## 16. Screenshots & Interface Overview
+## 16. API Endpoints
+
+### Chat & Assistant
+| Method | Endpoint | Description |
+| :--- | :--- | :--- |
+| `POST` | `/api/chat` | Natural-language query interface with structured data responses |
+| `GET` | `/api/chat/stream` | Server-Sent Events (SSE) chat streaming endpoint |
+| `POST` | `/api/chat/confirm` | Execute a previously confirmed destructive operation |
+
+### SLA Monitoring & Intelligence
+| Method | Endpoint | Description |
+| :--- | :--- | :--- |
+| `GET` | `/api/sla/metrics` | Aggregate SLA dashboard KPI metrics and compliance rate |
+| `GET` | `/api/sla/risks` | Evaluated SLA risks with optional breach, priority, or service filters |
+| `GET` | `/api/sla/telemetry` | Real host telemetry and labeled simulated enterprise metrics |
+| `POST` | `/api/sla/predict` | On-demand DeepSeek-R1 1.5B qualitative root cause prediction |
+| `GET` | `/api/sla` | List configured SLA priority and response/resolution thresholds |
+
+### Incident Management
+| Method | Endpoint | Description |
+| :--- | :--- | :--- |
+| `GET` | `/api/incidents` | List incidents (filterable by status, severity, service) |
+| `GET` | `/api/incidents/{id_or_code}` | Retrieve incident details by numeric ID or code (e.g. `INC-20260902-001`) |
+| `POST` | `/api/incidents` | Create a new incident |
+| `PUT` | `/api/incidents/{id}` | Update incident status, severity, or assignment |
+| `DELETE` | `/api/incidents/{id}` | Delete an incident record |
+
+### Tickets, Services & Files
+| Method | Endpoint | Description |
+| :--- | :--- | :--- |
+| `GET` / `POST` | `/api/tickets` | List tickets / create a new support ticket |
+| `PUT` / `DELETE` | `/api/tickets/{id}` | Update ticket details / delete ticket |
+| `GET` / `POST` | `/api/services` | List catalog services / register new service |
+| `PUT` / `DELETE` | `/api/services/{id}` | Update service / delete service |
+| `GET` / `POST` | `/api/files` | List file metadata records / upload a file |
+| `DELETE` | `/api/files/{id}` | Delete stored file record and binary asset |
+| `GET` | `/api/health` | System health check (Ollama, SQLite, runtime model) |
+
+---
+
+## 17. Project Structure
+
+```
+islm-project/
+├── frontend/                          # React 19 + Vite Application
+│   ├── src/
+│   │   ├── components/                # Modular UI Components
+│   │   │   ├── ChatMessage.jsx        # Typewriter chat message bubble
+│   │   │   ├── ChatInput.jsx          # Input bar with suggestion chips
+│   │   │   ├── StatusBar.jsx          # Real-time backend & Ollama health indicators
+│   │   │   ├── DataTable.jsx          # Structured table renderer for all entity types
+│   │   │   ├── ConfirmDialog.jsx      # Modal dialog for destructive actions
+│   │   │   ├── LoadingIndicator.jsx   # Animated loading indicator
+│   │   │   └── SlaDashboard.jsx       # SLA Monitoring Dashboard, Telemetry & AI Synthesis
+│   │   ├── services/
+│   │   │   └── api.js                 # API client wrapper
+│   │   ├── App.jsx                    # Root component with tab navigation
+│   │   ├── main.jsx                   # React entry point
+│   │   └── index.css                  # Viewport flexbox design system & dark theme
+│   ├── vite.config.js
+│   └── package.json
+│
+├── backend/                           # FastAPI Application
+│   ├── main.py                        # Server initialization and lifespan router setup
+│   ├── config.py                      # Dynamic SQLite URL resolution and configuration
+│   ├── api/                           # REST API routes
+│   │   ├── chat.py                    # Natural language chat & streaming endpoints
+│   │   ├── sla.py                     # SLA metrics, risks, and telemetry routes
+│   │   ├── incidents.py               # Incident lifecycle management routes
+│   │   ├── tickets.py                 # Support ticket CRUD routes
+│   │   ├── services.py                # Service catalog routes
+│   │   ├── files.py                   # File metadata and upload routes
+│   │   └── health.py                  # Health check route
+│   ├── database/                      # SQLAlchemy ORM and schema layer
+│   │   ├── connection.py              # SQLite session factory
+│   │   ├── models.py                  # User, Service, Ticket, SLA, Incident, File models
+│   │   ├── schemas.py                 # Pydantic schemas for requests and responses
+│   │   ├── seed.py                    # Idempotent database seeder
+│   │   ├── reseed.py                  # Reseed utility
+│   │   ├── test_llm.py                # Ad-hoc LLM diagnostic script
+│   │   └── DATASETS.md                # Comprehensive reference datasets & SQL DDL
+│   ├── services/                      # Business Logic Layer
+│   │   ├── llm_service.py             # Intent parser, regex extraction & Ollama SLM client
+│   │   ├── sla_service.py             # SLA risk calculations, compliance formula & partitioning
+│   │   ├── telemetry_service.py       # Live host metrics & simulated IT telemetry
+│   │   ├── ticket_service.py          # Ticket business logic and duplicate detection
+│   │   ├── incident_service.py        # Incident tracking and query handlers
+│   │   ├── service_service.py         # Service catalog operations
+│   │   └── file_service.py            # File metadata storage and validation
+│   ├── tools/
+│   │   └── dispatcher.py              # Validated intent dispatcher
+│   ├── prompts/
+│   │   └── system_prompt.txt          # DeepSeek-R1 prompt engineering rules and examples
+│   └── requirements.txt
+│
+├── tests/                             # Automated Test Suite
+│   └── test_backend.py                # Pytest backend test suite
+├── evaluation/                        # Experimental Evaluation Framework
+│   ├── README.md                      # Evaluation methodology & replication instructions
+│   ├── evaluate_slm.py                # Automated 12-case operational test runner
+│   ├── run_experiment.py              # Multi-run latency, CPU, and RAM benchmark harness
+│   ├── check_fallback.py              # Connection-refusal & timeout fallback verification
+│   ├── update_evaluation_framework.py # Scoring guidelines & rubric updater
+│   └── raw_evaluation_results.csv     # Historical benchmark records across 12 test cases
+├── storage/                           # Local filesystem storage for uploads
+├── pytest.ini                         # Pytest configuration
+├── start.bat                          # One-click startup script for Windows
+├── .env.example                       # Environment variable template (DATABASE_URL, Ollama config)
+├── .gitignore                         # Git exclusion rules
+├── LICENSE                            # MIT License
+├── ISLM_DEEPSEEK_R1_EXPERIMENTAL_EVALUATION_REPORT.md  # Experimental evaluation report
+└── README.md
+```
+
+---
+
+## 18. Screenshots & Interface Overview
 
 | View | Description | Key Elements |
 | :--- | :--- | :--- |
@@ -337,25 +500,25 @@ npm run build
 | **ITSM Chat Assistant** | Conversational service management interface | Natural-language querying, suggestion chips, parameterized tables, two-phase confirmation |
 | **Live Telemetry Center** | Host infrastructure & correlated IT indicators | SQLite response time (`SELECT 1`), host CPU & RAM (`psutil`), simulated WAN loss & router metrics |
 
-*(Visual screenshots can be captured directly from the live application at `http://localhost:5173`)*
+*(Visual screenshots can be captured directly from the live running application at `http://localhost:5173`; no artificial or fabricated mock images are included in the repository).*
 
 ---
 
-## 17. Limitations & Future Enhancements
+## 19. Limitations & Future Enhancements
 
 ### Current Limitations
-- **CPU Inference Latency:** Running DeepSeek-R1 1.5B on standard desktop CPUs without GPU acceleration results in an average response time of ~55 seconds for deep qualitative synthesis.
-- **Simulated IT Telemetry:** WAN latency, router utilization, and packet loss are synthesized and correlated based on database records rather than live SNMP/NETCONF polling.
-- **SQLite Concurrency:** While SQLite in WAL mode provides high read concurrency, high-throughput enterprise deployments with hundreds of concurrent writes would benefit from PostgreSQL.
+* **CPU Inference Latency:** Running DeepSeek-R1 1.5B on standard desktop CPUs without GPU acceleration results in an average response time of ~55 seconds for deep qualitative synthesis.
+* **Simulated IT Telemetry:** WAN latency, router utilization, and packet loss are synthesized and correlated based on database records rather than live SNMP/NETCONF polling.
+* **SQLite Concurrency:** While SQLite in WAL mode provides high read concurrency, high-throughput enterprise deployments with hundreds of concurrent writes would benefit from PostgreSQL.
 
 ### Future Enhancements
-- **GPU Acceleration Integration:** Enable direct CUDA / ROCm acceleration in Ollama to reduce SLM inference latency to under 3 seconds.
-- **Enterprise Vector Retrieval (RAG):** Integrate a local vector store (e.g., ChromaDB / FAISS) for indexing thousands of enterprise PDF/DOCX manuals.
-- **SNMP / OpenTelemetry Ingestion:** Connect live Cisco IOS-XE and Prometheus metric scrapers to replace simulated indicators with real hardware feeds.
-- **Multi-Tenant RBAC:** Add role-based authentication (OAuth2 / OpenID Connect) to support distinct customer organizations.
+* **GPU Hardware Acceleration:** Explore enabling CUDA or ROCm acceleration in Ollama as a possible optimization to reduce local SLM inference latency below current CPU-bound levels.
+* **Enterprise Vector Retrieval (RAG):** Integrate a local vector store (e.g., ChromaDB / FAISS) for indexing thousands of enterprise PDF/DOCX manuals.
+* **SNMP / OpenTelemetry Ingestion:** Connect live Cisco IOS-XE and Prometheus metric scrapers to replace simulated indicators with real hardware feeds.
+* **Multi-Tenant RBAC:** Add role-based authentication (OAuth2 / OpenID Connect) to support distinct customer organizations.
 
 ---
 
 ## License
 
-This project is released under the MIT License.
+This project is licensed under the MIT License — see the [LICENSE](LICENSE) file for details.
