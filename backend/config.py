@@ -19,8 +19,15 @@ class Settings:
     _DEFAULT_DB_FILE: str = (BASE_DIR / "islm_recovered.db").as_posix()
 
     # Database — uses absolute path on Windows to prevent directory drift
-    DATABASE_URL: str = os.getenv("DATABASE_URL", f"sqlite:///{_DEFAULT_DB_FILE}")
+DATABASE_URL: str = os.getenv(
+    "DATABASE_URL",
+    f"sqlite:///{_DEFAULT_DB_FILE}"
+)
 
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+psycopg://", 1)
+elif DATABASE_URL.startswith("postgresql://"):
+    DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+psycopg://", 1)
     # Ollama / LLM
     OLLAMA_URL: str = os.getenv("OLLAMA_URL", "http://localhost:11434")
     OLLAMA_MODEL: str = os.getenv("OLLAMA_MODEL", "deepseek-r1:1.5b")
