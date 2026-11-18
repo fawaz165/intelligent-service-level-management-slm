@@ -226,16 +226,28 @@ def _try_deterministic_parse(user_message: str) -> Optional[LLMIntent]:
         or re.search(r'\b(inc-\d{8}-\d{3})\b', msg_lower, re.IGNORECASE)
     )
     # Never create a ticket unless the user explicitly requests ticket creation
-    is_create = (
+    explicit_create_ticket = (
         not has_explicit_item_id
-        and any(kw in msg_lower for kw in [
-            "create ticket", "create a ticket", "add ticket", "add a ticket",
-            "new ticket", "open ticket", "open a ticket", "raise ticket",
-            "raise a ticket", "file ticket", "file a ticket", "submit ticket",
-            "create incident", "create service", "create a service", "add service",
-            "open a new", "raise a new", "file a new", "submit a new"
-        ])
+        and not is_read
+        and (
+            bool(re.search(r'\b(create|raise|file|submit|add)\b.*?\btickets?\b', msg_lower))
+            or bool(re.search(r'\bopen\b.*?\btickets?\b', msg_lower))
+            or any(kw in msg_lower for kw in [
+                "create ticket", "create a ticket", "add ticket", "add a ticket",
+                "new ticket", "open ticket", "open a ticket", "raise ticket",
+                "raise a ticket", "file ticket", "file a ticket", "submit ticket",
+                "open a new", "raise a new", "file a new", "submit a new"
+            ])
+        )
     )
+    is_create_incident = not has_explicit_item_id and not is_read and (
+        bool(re.search(r'\b(create|raise|file|submit|report)\b.*?\bincidents?\b', msg_lower))
+        or "create incident" in msg_lower
+    )
+    is_create_service = not has_explicit_item_id and not is_read and any(
+        kw in msg_lower for kw in ["create service", "create a service", "add service", "add a service"]
+    )
+    is_create = explicit_create_ticket or is_create_incident or is_create_service
     is_delete = any(kw in msg_lower for kw in ["delete", "remove", "drop"])
     is_update = any(kw in msg_lower for kw in ["update", "change", "modify", "edit", "set", "assign", "close", "resolve"])
 
@@ -600,11 +612,13 @@ def _try_deterministic_parse(user_message: str) -> Optional[LLMIntent]:
         if detected_priority:
             params["priority"] = detected_priority
 
+        prio_label = f"{detected_priority}-priority " if detected_priority else ""
+        cat_label = f"{detected_category} " if detected_category else ""
         return LLMIntent(
             operation="CREATE",
             entity="ticket",
             parameters=params if params else None,
-            message=f"Creating a {detected_priority or 'new'} {detected_category or ''} ticket.".replace("  ", " "),
+            message=f"Creating a {prio_label}{cat_label}ticket.".strip(),
         )
 
     if is_create and entity == "service":
@@ -764,13 +778,21 @@ def _post_validate_llm_intent(intent: LLMIntent, user_message: str) -> LLMIntent
 
     # Guard 5: Prevent unintended ticket creation (It must never create a ticket unless explicitly requested)
     if intent.operation == "CREATE" and intent.entity == "ticket":
-        explicit_ticket_create = any(
-            kw in msg_lower for kw in [
-                "create ticket", "create a ticket", "add ticket", "add a ticket",
-                "new ticket", "open ticket", "open a ticket", "raise ticket",
-                "raise a ticket", "file ticket", "file a ticket", "submit ticket",
-                "submit a ticket", "create new ticket", "open a new ticket"
-            ]
+        explicit_ticket_create = (
+            not has_explicit_item_id
+            and not is_read
+            and (
+                bool(re.search(r'\b(create|raise|file|submit|add)\b.*?\btickets?\b', msg_lower))
+                or bool(re.search(r'\bopen\b.*?\btickets?\b', msg_lower))
+                or any(
+                    kw in msg_lower for kw in [
+                        "create ticket", "create a ticket", "add ticket", "add a ticket",
+                        "new ticket", "open ticket", "open a ticket", "raise ticket",
+                        "raise a ticket", "file ticket", "file a ticket", "submit ticket",
+                        "submit a ticket", "create new ticket", "open a new ticket"
+                    ]
+                )
+            )
         )
         if not explicit_ticket_create:
             logger.warning("Post-validate override: Blocked unintended ticket creation. Overriding to READ.")

@@ -149,13 +149,18 @@ export async function getSlaRisks(params = {}) {
  * On-demand DeepSeek-R1 1.5B qualitative root cause prediction and technical action plan.
  * @param {string} entityType - "ticket" or "incident"
  * @param {string|number} id - Target ID
+ * @param {string|null} refTime - Optional ISO timestamp matching the dashboard evaluation clock
  * @returns {Promise<Object>} Enriched item with ML prediction
  */
-export async function predictSlaRisk(entityType, id) {
+export async function predictSlaRisk(entityType, id, refTime = null) {
+  const payload = { entity_type: entityType, id: String(id) };
+  if (refTime) {
+    payload.ref_time = refTime;
+  }
   const res = await fetch(`${API_BASE}/sla/predict`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ entity_type: entityType, id: String(id) }),
+    body: JSON.stringify(payload),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));

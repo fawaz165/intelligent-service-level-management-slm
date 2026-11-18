@@ -3,6 +3,7 @@ SLA REST endpoints — query Service Level Agreement targets, monitoring metrics
 """
 
 from typing import Optional
+from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -17,6 +18,7 @@ router = APIRouter(prefix="/api/sla", tags=["sla"])
 class PredictRequest(BaseModel):
     entity_type: str  # "ticket" or "incident"
     id: str  # numeric ticket ID or incident code e.g. "1" or "INC-20260902-001"
+    ref_time: Optional[str] = None  # Optional evaluation reference timestamp to synchronize with dashboard card
 
 
 # ── SLA Risk & Metrics Endpoints (MUST precede /{sla_id}) ─────────────────
@@ -86,11 +88,21 @@ async def predict_risk(
     if not item:
         raise HTTPException(status_code=404, detail=f"{entity_type.capitalize()} '{target_id}' not found")
 
+    # Parse optional reference time to guarantee synchronization with dashboard card
+    ref_dt = None
+    if req.ref_time:
+        try:
+            ref_dt = datetime.fromisoformat(req.ref_time.replace("Z", "+00:00"))
+            if ref_dt.tzinfo is None:
+                ref_dt = ref_dt.replace(tzinfo=timezone.utc)
+        except Exception:
+            ref_dt = None
+
     # Evaluate deterministic rule-based baseline
-    evaluated = sla_service.evaluate_single_item(item, entity_type, db)
+    evaluated = sla_service.evaluate_single_item(item, entity_type, db, ref_time=ref_dt)
 
     # Enrich with DeepSeek-R1 1.5B qualitative analysis
-    enriched = await sla_service.enrich_with_ai_prediction(evaluated)
+    enriched = await sla_service.enrich_with_ai_prediction(evaluated, db=db)
     return enriched
 
 

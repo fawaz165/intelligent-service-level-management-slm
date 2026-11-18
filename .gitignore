@@ -19,6 +19,9 @@
 islm.db
 islm.db-shm
 islm.db-wal
+islm_recovered.db
+islm_recovered.db-shm
+islm_recovered.db-wal
 
 # ==========================================
 # Python & FastAPI
@@ -38,7 +41,6 @@ lib/
 lib64/
 parts/
 sdist/
-var/
 wheels/
 *.egg-info/
 .installed.cfg
@@ -105,6 +107,6 @@ ehthumbs.db
 Thumbs.db
 desktop.ini
 scratch/
-*REPORT*.md
-*report*.md
+evaluation/runs/
+slm_evaluation_raw_results.csv
 ISLM_INSPECTION_REPORT.md

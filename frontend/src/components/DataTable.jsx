@@ -3,6 +3,7 @@
  *
  * Adapts columns and formatting based on data_type (tickets, services, files, users, sla).
  */
+import { useRef, useEffect } from 'react';
 
 const COLUMN_CONFIG = {
   tickets: [
@@ -82,12 +83,20 @@ function truncate(text, max) {
 }
 
 export default function DataTable({ data, dataType }) {
+  const wrapperRef = useRef(null);
+
+  useEffect(() => {
+    if (wrapperRef.current) {
+      wrapperRef.current.scrollLeft = 0;
+    }
+  }, [data, dataType]);
+
   if (!data || data.length === 0) return null;
 
   const columns = COLUMN_CONFIG[dataType] || Object.keys(data[0]).map(k => ({ key: k, label: k }));
 
   return (
-    <div className="data-table-wrapper">
+    <div className="data-table-wrapper" ref={wrapperRef}>
       <table className="data-table">
         <thead>
           <tr>

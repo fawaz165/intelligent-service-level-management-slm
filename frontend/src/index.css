@@ -461,14 +461,42 @@ body {
   white-space: nowrap;
 }
 
+/* Ensure the first column is never clipped or shrunk below readable width */
+.data-table th:first-child,
+.data-table td:first-child,
+.data-table th.col-id,
+.data-table td.col-id,
+.data-table th.col-entity_id,
+.data-table td.col-entity_id,
+.data-table th.col-incident_id,
+.data-table td.col-incident_id {
+  min-width: 65px;
+  padding-left: 14px;
+  text-align: left;
+}
+
+.data-table th.col-table,
+.data-table td.col-table {
+  min-width: 130px;
+  padding-left: 14px;
+}
+
+.data-table th.col-metric,
+.data-table td.col-metric {
+  min-width: 170px;
+  padding-left: 14px;
+}
+
 /* Allow Action and Title columns to wrap naturally without breaking table structure */
 .data-table th.col-recommended_action,
 .data-table td.col-recommended_action,
 .data-table th.col-action,
 .data-table td.col-action {
   white-space: normal !important;
-  min-width: 250px;
+  min-width: 220px;
   max-width: 440px;
+  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 
 .action-text-wrapper {
@@ -482,6 +510,8 @@ body {
   padding: 8px 12px;
   border-radius: var(--radius-sm, 6px);
   border-left: 3px solid var(--accent, #6366f1);
+  box-sizing: border-box;
+  max-width: 100%;
 }
 
 .data-table th.col-title,
@@ -1746,12 +1776,18 @@ body {
     width: 100%;
   }
 
+  .data-table th:first-child,
+  .data-table td:first-child {
+    min-width: 60px;
+    padding-left: 12px;
+  }
+
   .data-table th.col-recommended_action,
   .data-table td.col-recommended_action,
   .data-table th.col-action,
   .data-table td.col-action {
-    min-width: 250px;
-    max-width: 440px;
+    min-width: 200px;
+    max-width: 380px;
   }
 
   .data-table th.col-title,
@@ -1799,6 +1835,12 @@ body {
     border-radius: var(--radius-sm, 6px);
   }
 
+  .data-table th:first-child,
+  .data-table td:first-child {
+    min-width: 55px;
+    padding-left: 10px;
+  }
+
   .data-table th,
   .data-table td {
     padding: 8px 10px;
@@ -1809,8 +1851,8 @@ body {
   .data-table td.col-recommended_action,
   .data-table th.col-action,
   .data-table td.col-action {
-    min-width: 240px;
-    max-width: 380px;
+    min-width: 180px;
+    max-width: 320px;
   }
 
   .action-text-wrapper {

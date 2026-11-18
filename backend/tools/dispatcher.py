@@ -6,6 +6,7 @@ The dispatcher never touches the database directly.
 """
 
 import logging
+from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 
 from backend.config import settings
@@ -575,17 +576,34 @@ def _handle_ticket(op, params, filters, record_id, intent, db):
                 }
             params["category"] = norm_cat
 
-        # Infer title if missing
+        # Infer title and description if missing
+        cat = params.get("category", "")
+        prio = params.get("priority", "")
         if not params.get("title"):
-            cat = params.get("category", "")
-            prio = params.get("priority", "")
-            if cat or prio:
+            if cat == "Database":
+                base_title = "High-Priority Database Performance Alert" if prio == "high" else "Database Service Performance Alert"
+                existing = ticket_service.check_duplicate_ticket(db, base_title, cat)
+                if existing:
+                    now_str = datetime.now(timezone.utc).strftime("%H:%M:%S")
+                    params["title"] = f"{base_title} ({now_str})"
+                else:
+                    params["title"] = base_title
+            elif cat or prio:
                 title_parts = [p.capitalize() for p in [prio, cat, "Ticket"] if p]
                 params["title"] = " ".join(title_parts)
             else:
                 params["title"] = intent.message or "New Ticket"
 
-        # Check for duplicate active ticket
+        if not params.get("description"):
+            if cat == "Database":
+                params["description"] = (
+                    "Automated investigation required for database service latency spikes, "
+                    "high connection pool utilization, and potential lock contention."
+                )
+            else:
+                params["description"] = f"Automated ticket created for {cat or 'system'} issue."
+
+        # Check for duplicate active ticket if not dynamically deduplicated
         if params.get("title"):
             dup = ticket_service.check_duplicate_ticket(db, params["title"], params.get("category"))
             if dup:
@@ -597,14 +615,43 @@ def _handle_ticket(op, params, filters, record_id, intent, db):
                     "pending_action": None,
                 }
 
-        result = ticket_service.create_ticket(db, params)
-        return {
-            "reply": f"✅ Ticket #{result['id']} created: \"{result['title']}\" ({result['priority']} priority, {result['category']}).",
-            "data": [result],
-            "data_type": "tickets",
-            "requires_confirmation": False,
-            "pending_action": None,
-        }
+        try:
+            result = ticket_service.create_ticket(db, params)
+            if not result or not result.get("id"):
+                return {
+                    "reply": "❌ Failed to create ticket: Database operation did not return a valid record ID.",
+                    "data": None,
+                    "data_type": None,
+                    "requires_confirmation": False,
+                    "pending_action": None,
+                }
+            # Verify the record exists in SQLite
+            verified = ticket_service.get_ticket(db, result["id"])
+            if not verified:
+                return {
+                    "reply": f"❌ Ticket creation failed verification: Record ID {result.get('id')} could not be found in the database.",
+                    "data": None,
+                    "data_type": None,
+                    "requires_confirmation": False,
+                    "pending_action": None,
+                }
+            return {
+                "reply": f"✅ Ticket #{verified['id']} created: \"{verified['title']}\" ({verified['priority']} priority, {verified['category']}).",
+                "data": [verified],
+                "data_type": "tickets",
+                "requires_confirmation": False,
+                "pending_action": None,
+            }
+        except Exception as e:
+            logger.error("Error creating ticket in database: %s", e, exc_info=True)
+            db.rollback()
+            return {
+                "reply": f"❌ Failed to create ticket due to database error: {str(e)}",
+                "data": None,
+                "data_type": None,
+                "requires_confirmation": False,
+                "pending_action": None,
+            }
 
     if op == "UPDATE":
         if not record_id:
@@ -902,6 +949,7 @@ def _handle_readonly(entity, op, filters, db):
 # SLA RISK handler
 # ═════════════════════════════════════════════════════════════════════════
 async def _handle_sla_risk(op, params, filters, intent, db):
+    eval_time = datetime.now(timezone.utc)
     risk_level = filters.get("risk_level") or filters.get("priority")
     entity_filter = filters.get("entity")
     service_filter = filters.get("service")
@@ -913,10 +961,12 @@ async def _handle_sla_risk(op, params, filters, intent, db):
         entity_filter=entity_filter,
         service_filter=service_filter,
         breached_only=breached_only,
+        ref_time=eval_time,
     )
 
     # If user explicitly requested prediction / AI analysis, enrich top items with DeepSeek-R1
-    if filters.get("with_ai") or any(w in (intent.message or "").lower() for w in ["predict", "prediction", "ai", "recommend"]):
+    msg_words = set((intent.message or "").lower().split())
+    if filters.get("with_ai") or bool(msg_words & {"predict", "prediction", "ai", "deepseek"}):
         enriched = []
         for r in risks[:3]:
             r_copy = dict(r)
@@ -925,7 +975,7 @@ async def _handle_sla_risk(op, params, filters, intent, db):
         risks = enriched + risks[3:]
 
     count = len(risks)
-    global_metrics = sla_service.get_sla_dashboard_metrics(db)
+    global_metrics = sla_service.get_sla_dashboard_metrics(db, ref_time=eval_time)
     total_monitored = global_metrics["total_monitored"]
     count = len(risks)
     breached_cnt = sum(1 for r in risks if r.get("is_breached"))
@@ -1022,7 +1072,8 @@ def _handle_database_counts(db: Session) -> dict:
 # SLA GLOBAL METRICS handler (Issue 3 & 4)
 # ═════════════════════════════════════════════════════════════════════════
 def _handle_sla_metrics(db: Session) -> dict:
-    metrics = sla_service.get_sla_dashboard_metrics(db)
+    eval_time = datetime.now(timezone.utc)
+    metrics = sla_service.get_sla_dashboard_metrics(db, ref_time=eval_time)
 
     total_monitored = metrics["total_monitored"]
     breached_count = metrics["breached_count"]
@@ -1125,7 +1176,7 @@ def _handle_telemetry(db: Session, user_message: str) -> dict:
             "value": f"{db_lat} ms",
             "type": "🟢 Real",
             "status": db_status,
-            "source": "SQLite islm.db Kernel",
+            "source": f"SQLite {settings.DATABASE_URL.split('/')[-1] or 'islm_recovered.db'} Kernel",
         },
         {
             "metric": "Host CPU Utilization",

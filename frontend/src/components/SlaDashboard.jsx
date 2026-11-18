@@ -105,16 +105,18 @@ export default function SlaDashboard({ onMetricsUpdate }) {
     setAiAnalyzingId(key);
 
     try {
-      const enriched = await predictSlaRisk(item.entity_type, item.id || item.entity_id);
-      setAiResults(prev => ({
-        ...prev,
-        [key]: enriched.ml_prediction || {
-          ai_root_cause_analysis: 'Root cause analysis generated from technical parameters.',
-          ai_sla_risk_explanation: 'Active SLA consumption under observation.',
-          ai_recommended_action: enriched.recommended_action,
-          risk_trajectory: 'Active Monitoring',
-        },
-      }));
+      const enriched = await predictSlaRisk(item.entity_type, item.id || item.entity_id, item.evaluated_at);
+      if (enriched && enriched.ml_prediction) {
+        setAiResults(prev => ({
+          ...prev,
+          [key]: enriched.ml_prediction,
+        }));
+        // Update item in list so card metrics and modal metrics stay strictly synchronized
+        setItems(prev => prev.map(it => {
+          const isMatch = it.entity_type === enriched.entity_type && (it.id === enriched.id || it.entity_id === enriched.entity_id);
+          return isMatch ? { ...it, ...enriched } : it;
+        }));
+      }
     } catch (err) {
       setAiResults(prev => ({
         ...prev,
@@ -503,7 +505,7 @@ export default function SlaDashboard({ onMetricsUpdate }) {
                 <div className="telemetry-label">Packet Loss</div>
                 <div className="telemetry-sub">Threshold target: &lt; 0.5% (abnormal: &ge; 1.0%)</div>
                 <div className="telemetry-threshold-text">Threshold: {telemetry.simulated_metrics?.packet_loss_threshold || '< 0.5% normal'}</div>
-                <div className="telemetry-data-source">Source: ICMP Trap Agent (Simulated)</div>
+                <div className="telemetry-data-source">Source: Simulated ICMP Probe (Synthetic)</div>
               </div>
 
               {/* Simulated: Router R101 Status */}
@@ -523,7 +525,7 @@ export default function SlaDashboard({ onMetricsUpdate }) {
                   Util: {telemetry.simulated_metrics?.router_r101?.interface_utilization_pct || 43.5}% • Drops: {telemetry.simulated_metrics?.router_r101?.packet_drops_per_sec ?? 0}/s
                 </div>
                 <div className="telemetry-threshold-text">Threshold: Utilization &lt; 75%, Drops = 0</div>
-                <div className="telemetry-data-source">Throughput: {telemetry.simulated_metrics?.router_r101?.throughput_mbps} Mbps (SNMP Agent)</div>
+                <div className="telemetry-data-source">Throughput: {telemetry.simulated_metrics?.router_r101?.throughput_mbps} Mbps (Simulated Model)</div>
               </div>
 
               {/* Simulated: Switch SW-05 Status */}
@@ -543,7 +545,7 @@ export default function SlaDashboard({ onMetricsUpdate }) {
                   Util: {telemetry.simulated_metrics?.switch_sw05?.interface_utilization_pct || 36.2}% • CRC Errors: {telemetry.simulated_metrics?.switch_sw05?.crc_errors ?? 0}
                 </div>
                 <div className="telemetry-threshold-text">Threshold: CRC Errors = 0, Ports Active &ge; 40</div>
-                <div className="telemetry-data-source">Ports: {telemetry.simulated_metrics?.switch_sw05?.active_ports} Active (Cisco IOS-XE)</div>
+                <div className="telemetry-data-source">Ports: {telemetry.simulated_metrics?.switch_sw05?.active_ports} Active (Simulated Model)</div>
               </div>
 
               {/* Simulated: DBMS Replication Lag */}
@@ -561,7 +563,7 @@ export default function SlaDashboard({ onMetricsUpdate }) {
                 <div className="telemetry-label">Replication Lag (Binlog)</div>
                 <div className="telemetry-sub">Primary to standby sync delay</div>
                 <div className="telemetry-threshold-text">Threshold: {telemetry.simulated_metrics?.replication_lag_threshold || '< 1.0s normal'}</div>
-                <div className="telemetry-data-source">Hit Ratio: {telemetry.simulated_metrics?.database_buffer_hit_pct}% (MySQL Engine)</div>
+                <div className="telemetry-data-source">Hit Ratio: {telemetry.simulated_metrics?.database_buffer_hit_pct}% (Simulated Cache)</div>
               </div>
 
               {/* Simulated: Database Backup Status */}
@@ -1006,7 +1008,10 @@ export default function SlaDashboard({ onMetricsUpdate }) {
                 <div className="sla-ai-synthesis-container">
                   <div className="sla-ai-disclaimer-banner">
                     <span>🤖 <strong>DeepSeek-R1 1.5B Local SLM Inference</strong> (Ollama)</span>
-                    <span>Domain SRE RAG Grounded</span>
+                    <span>Domain Runbook-Grounded SLM</span>
+                  </div>
+                  <div className="sla-ai-safety-banner" style={{ marginTop: '8px', padding: '8px 12px', background: 'rgba(30, 58, 138, 0.25)', border: '1px solid rgba(59, 130, 246, 0.35)', borderRadius: '6px', fontSize: '12px', color: '#93c5fd', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <span>🛡️ <strong>Human-in-the-Loop Advisory:</strong> Root causes are probabilistic SLM hypotheses. Actions are advisory and require human engineer verification before execution. The SLM does not perform operational changes.</span>
                   </div>
 
                   {isAnalyzingThis ? (
@@ -1030,7 +1035,7 @@ export default function SlaDashboard({ onMetricsUpdate }) {
                       {/* Section 1: Incident Summary */}
                       <div className="sla-ai-section-card">
                         <div className="sla-ai-card-title">
-                          <span>📋 Incident Summary</span>
+                          <span>📋 {currentItem.status === 'resolved' || currentItem.status === 'closed' ? 'Post-Incident Summary (PIR)' : 'Incident Summary'}</span>
                         </div>
                         <div className="sla-ai-card-text">
                           {modalAiData.incident_summary || modalAiData.ai_root_cause_analysis}
@@ -1039,8 +1044,11 @@ export default function SlaDashboard({ onMetricsUpdate }) {
 
                       {/* Section 2: Possible Root Causes */}
                       <div className="sla-ai-section-card card-highlight">
-                        <div className="sla-ai-card-title">
-                          <span>🔍 Possible Root Causes (SLM Technical Hypothesis)</span>
+                        <div className="sla-ai-card-title" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <span>🔍 {currentItem.status === 'resolved' || currentItem.status === 'closed' ? 'Possible Root Causes (Post-Incident Review)' : 'Possible Root Causes'}</span>
+                          <span className="badge" style={{ background: 'rgba(245, 158, 11, 0.2)', color: '#fbbf24', border: '1px solid rgba(245, 158, 11, 0.4)', fontSize: '11px', textTransform: 'none' }}>
+                            ⚠️ Probabilistic SLM Hypothesis (Unverified)
+                          </span>
                         </div>
                         <div className="sla-ai-card-text">
                           {modalAiData.possible_root_causes || modalAiData.ai_root_cause_analysis}
@@ -1049,8 +1057,34 @@ export default function SlaDashboard({ onMetricsUpdate }) {
 
                       {/* Section 3: SLA Risk Explanation */}
                       <div className="sla-ai-section-card">
-                        <div className="sla-ai-card-title">
-                          <span>⏱️ SLA Risk Explanation &amp; Operational Impact</span>
+                        <div className="sla-ai-card-title" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <span>⏱️ {currentItem.status === 'resolved' || currentItem.status === 'closed' ? 'Historical SLA Outcome & Performance' : 'SLA Risk Explanation & Operational Impact'}</span>
+                          <span className="badge" style={{ background: 'rgba(34, 197, 94, 0.15)', color: '#4ade80', border: '1px solid rgba(34, 197, 94, 0.35)', fontSize: '11px', textTransform: 'none' }}>
+                            🟢 Authoritative SQLite SLA Ground Truth
+                          </span>
+                        </div>
+                        {/* Authoritative SQLite SLA Metrics Card */}
+                        <div style={{ margin: '8px 0 12px 0', padding: '10px 14px', background: 'rgba(15, 23, 42, 0.75)', border: `1px solid ${currentItem.is_breached ? 'rgba(239, 68, 68, 0.5)' : 'rgba(59, 130, 246, 0.4)'}`, borderRadius: '6px' }}>
+                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '8px', fontSize: '12px' }}>
+                            <div>
+                              <span style={{ color: '#94a3b8' }}>Target:</span> <strong style={{ color: '#f8fafc' }}>{currentItem.target_display || `${currentItem.target_minutes}m`} ({currentItem.target_name || 'SLA Target'})</strong>
+                            </div>
+                            <div>
+                              <span style={{ color: '#94a3b8' }}>Elapsed:</span> <strong style={{ color: '#f8fafc' }}>{currentItem.elapsed_minutes}m ({currentItem.percent_elapsed}%)</strong>
+                            </div>
+                            <div>
+                              <span style={{ color: '#94a3b8' }}>{currentItem.status === 'resolved' || currentItem.status === 'closed' ? 'Overtime:' : 'Remaining:'}</span>{' '}
+                              <strong style={{ color: currentItem.is_breached ? '#f87171' : '#4ade80' }}>
+                                {currentItem.is_breached ? `+${Math.max(0, currentItem.elapsed_minutes - (currentItem.target_minutes || 0))}m (Exceeded)` : `${currentItem.remaining_minutes || 0}m (Healthy)`}
+                              </strong>
+                            </div>
+                            <div>
+                              <span style={{ color: '#94a3b8' }}>SLA Status:</span>{' '}
+                              <strong style={{ color: currentItem.is_breached ? '#f87171' : '#4ade80' }}>
+                                {currentItem.is_breached ? 'BREACHED' : (currentItem.status === 'resolved' || currentItem.status === 'closed' ? 'MET TARGET' : 'IN PROGRESS')}
+                              </strong>
+                            </div>
+                          </div>
                         </div>
                         <div className="sla-ai-card-text">
                           {modalAiData.sla_risk_explanation || modalAiData.ai_sla_risk_explanation}
@@ -1059,22 +1093,45 @@ export default function SlaDashboard({ onMetricsUpdate }) {
 
                       {/* Section 4: Recommended Troubleshooting Steps */}
                       <div className="sla-ai-section-card">
-                        <div className="sla-ai-card-title">
-                          <span>🛠️ Recommended Troubleshooting Steps</span>
+                        <div className="sla-ai-card-title" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <span>🛠️ {currentItem.status === 'resolved' || currentItem.status === 'closed' ? 'Recommended Post-Resolution Actions (Human Advisory)' : 'Recommended Troubleshooting Steps (Human Engineer Advisory)'}</span>
+                          <span className="badge" style={{ background: 'rgba(59, 130, 246, 0.15)', color: '#93c5fd', border: '1px solid rgba(59, 130, 246, 0.35)', fontSize: '11px', textTransform: 'none' }}>
+                            🛡️ Advisory (Human Authorization Required)
+                          </span>
                         </div>
-                        <div className="sla-ai-card-text">
+                        <div className="sla-ai-card-text" style={{ whiteSpace: 'pre-line' }}>
                           {modalAiData.recommended_troubleshooting_steps || modalAiData.ai_recommended_action}
                         </div>
                       </div>
 
                       {/* Section 5: Supporting Evidence Available */}
                       <div className="sla-ai-section-card">
-                        <div className="sla-ai-card-title">
-                          <span>📊 Supporting Evidence (Context &amp; Telemetry Signals)</span>
+                        <div className="sla-ai-card-title" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <span>📊 Supporting Evidence &amp; Telemetry Signals</span>
+                          <span className="badge" style={{ background: 'rgba(34, 197, 94, 0.15)', color: '#4ade80', border: '1px solid rgba(34, 197, 94, 0.35)', fontSize: '11px', textTransform: 'none' }}>
+                            🟢 Verified SQLite &amp; Telemetry
+                          </span>
                         </div>
                         <div className="sla-ai-card-text evidence-text">
                           {modalAiData.supporting_evidence || 'Active SQLite database record and correlated telemetry metrics.'}
                         </div>
+                        {modalAiData.telemetry_signals && modalAiData.telemetry_signals.length > 0 && (
+                          <div className="sla-modal-telemetry-signals" style={{ marginTop: '10px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                            {modalAiData.telemetry_signals.map((sig, idx) => (
+                              <div key={idx} style={{ padding: '6px 10px', background: 'rgba(15, 23, 42, 0.6)', border: `1px solid ${sig.is_abnormal ? 'rgba(239, 68, 68, 0.4)' : 'rgba(34, 197, 94, 0.4)'}`, borderRadius: '4px', fontSize: '12px' }}>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '2px' }}>
+                                  <strong>{sig.metric}: {sig.value}</strong>
+                                  <span style={{ fontSize: '11px', fontWeight: 600, color: sig.is_abnormal ? '#f87171' : '#4ade80' }}>
+                                    {sig.status}
+                                  </span>
+                                </div>
+                                <div style={{ fontSize: '11px', color: '#94a3b8' }}>
+                                  <span>Threshold: {sig.threshold}</span> • <span style={{ color: sig.label && sig.label.includes('Simulated') ? '#c084fc' : '#4ade80' }}>{sig.label}</span>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
                       </div>
 
                       {/* Section 6: Uncertainties or Missing Information */}
@@ -1087,20 +1144,20 @@ export default function SlaDashboard({ onMetricsUpdate }) {
                         </div>
                       </div>
 
-                      {/* Verified SRE Runbook Context (RAG Domain Grounding) */}
-                      {modalAiData.rag_knowledge_context && (
+                      {/* Verified SRE Runbook Context (Domain Runbook Grounding) */}
+                      {(modalAiData.domain_runbook_context || modalAiData.rag_knowledge_context) && (
                         <div className="sla-rag-knowledge-box">
                           <div className="sla-rag-top">
-                            <span className="badge badge-rag">🟢 Verified SRE Troubleshooting Runbook</span>
+                            <span className="badge badge-rag">🟢 Verified Domain SRE Troubleshooting Runbook</span>
                             <span className="sla-rag-id">
-                              {modalAiData.rag_knowledge_context.runbook_id} • {modalAiData.rag_knowledge_context.domain}
+                              {(modalAiData.domain_runbook_context || modalAiData.rag_knowledge_context).runbook_id} • {(modalAiData.domain_runbook_context || modalAiData.rag_knowledge_context).domain}
                             </span>
                           </div>
                           <div className="sla-rag-body">
                             <div className="sla-rag-section">
                               <strong>Standard Diagnostic Checks:</strong>
                               <ul>
-                                {modalAiData.rag_knowledge_context.diagnostic_checks?.map((chk, i) => (
+                                {(modalAiData.domain_runbook_context || modalAiData.rag_knowledge_context).diagnostic_checks?.map((chk, i) => (
                                   <li key={i}>{chk}</li>
                                 ))}
                               </ul>
@@ -1108,13 +1165,13 @@ export default function SlaDashboard({ onMetricsUpdate }) {
                             <div className="sla-rag-section">
                               <strong>Remediation Procedures:</strong>
                               <ul>
-                                {modalAiData.rag_knowledge_context.remediation_procedures?.map((proc, i) => (
+                                {(modalAiData.domain_runbook_context || modalAiData.rag_knowledge_context).remediation_procedures?.map((proc, i) => (
                                   <li key={i}>{proc}</li>
                                 ))}
                               </ul>
                             </div>
                             <div className="sla-rag-footer">
-                              Verified Source: <em>{modalAiData.rag_knowledge_context.verified_source}</em>
+                              Verified Source: <em>{(modalAiData.domain_runbook_context || modalAiData.rag_knowledge_context).verified_source}</em>
                             </div>
                           </div>
                         </div>

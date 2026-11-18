@@ -19,8 +19,9 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional, List, Dict, Any, Union
 from sqlalchemy.orm import Session
 
+from backend.config import settings
 from backend.database.models import Ticket, Incident, Service, SLA, User
-from backend.services import llm_service
+from backend.services import llm_service, telemetry_service
 
 logger = logging.getLogger(__name__)
 
@@ -629,6 +630,7 @@ def evaluate_single_item(
             "reason": reason,
             "recommended_action": recommended_action,
             "ml_prediction": None,
+            "evaluated_at": now.isoformat(),
         }
 
     # Compute elapsed minutes for active items
@@ -746,11 +748,12 @@ def evaluate_single_item(
         "reason": reason,
         "recommended_action": recommended_action,
         "ml_prediction": None,
+        "evaluated_at": now.isoformat(),
     }
 
 
 # ═════════════════════════════════════════════════════════════════════════
-# DOMAIN SRE TROUBLESHOOTING RUNBOOKS (RAG KNOWLEDGE RETRIEVER)
+# DOMAIN SRE TROUBLESHOOTING RUNBOOKS (DOMAIN RUNBOOK GROUNDING)
 # ═════════════════════════════════════════════════════════════════════════
 SRE_TROUBLESHOOTING_RUNBOOKS = {
     "network": {
@@ -849,7 +852,7 @@ SRE_TROUBLESHOOTING_RUNBOOKS = {
 
 def retrieve_troubleshooting_knowledge(item_risk: dict) -> dict:
     """
-    RAG Knowledge Retriever: Match ticket/incident attributes to domain troubleshooting runbooks.
+    Domain Runbook Matcher: Match ticket/incident attributes to domain troubleshooting runbooks.
     Returns verified domain troubleshooting knowledge.
     """
     text_corpus = (
@@ -871,11 +874,345 @@ def retrieve_troubleshooting_knowledge(item_risk: dict) -> dict:
     return SRE_TROUBLESHOOTING_RUNBOOKS["general"]
 
 
-async def enrich_with_ai_prediction(item_risk: dict) -> dict:
+def extract_and_validate_telemetry(item_risk: dict, db: Optional[Session] = None) -> List[Dict[str, Any]]:
+    """
+    Extract observed telemetry signals from the item description, title, and correlated system metrics.
+    Validates each against configured thresholds and labels simulated metrics explicitly.
+    """
+    signals = []
+    text_corpus = f"{item_risk.get('title', '')} {item_risk.get('description', '')}".strip()
+    text_lower = text_corpus.lower()
+    cat = (item_risk.get("category") or "").lower()
+    service = (item_risk.get("service_name") or "").lower()
+
+    # 1. Packet Loss check (e.g. Incident 7: "2% packet loss between primary and backup data center")
+    pkt_loss_match = re.search(r'(\d+(?:\.\d+)?)\s*%\s*packet\s*loss|packet\s*loss.*?(\d+(?:\.\d+)?)\s*%', text_lower)
+    if pkt_loss_match:
+        val_str = pkt_loss_match.group(1) or pkt_loss_match.group(2)
+        try:
+            val_pct = float(val_str)
+            is_abnormal = val_pct >= 0.5
+            is_critical = val_pct >= 1.0
+            status_desc = "ABNORMAL / CRITICAL" if is_critical else ("ELEVATED / WARNING" if is_abnormal else "NORMAL / HEALTHY")
+            signals.append({
+                "metric": "Packet Loss",
+                "value": f"{val_pct}%",
+                "numeric_value": val_pct,
+                "unit": "%",
+                "threshold": "< 0.5% normal (elevated: 0.5%-1.0%, critical: >= 1.0%)",
+                "status": status_desc,
+                "is_abnormal": is_abnormal,
+                "source": "Simulated ICMP Telemetry Probe (Synthetic sample data; no live probe connected)",
+                "label": "🟣 [Simulated IT Telemetry]",
+                "evaluation": f"{val_pct}% packet loss is {status_desc} against the normal threshold of < 0.5%."
+            })
+        except ValueError:
+            pass
+
+    # 2. Network Latency check (e.g. "68.4ms", "latency spike")
+    lat_match = re.search(r'(\d+(?:\.\d+)?)\s*ms(?:\s*latency)?', text_lower)
+    if lat_match:
+        try:
+            val_ms = float(lat_match.group(1))
+            is_abnormal = val_ms >= 30.0
+            is_critical = val_ms >= 50.0
+            status_desc = "ABNORMAL / CRITICAL" if is_critical else ("ELEVATED / WARNING" if is_abnormal else "NORMAL / HEALTHY")
+            signals.append({
+                "metric": "Network Latency",
+                "value": f"{val_ms} ms",
+                "numeric_value": val_ms,
+                "unit": "ms",
+                "threshold": "< 30.0 ms normal (abnormal: >= 50.0 ms)",
+                "status": status_desc,
+                "is_abnormal": is_abnormal,
+                "source": "Simulated WAN Gateway Telemetry (Synthetic sample data)",
+                "label": "🟣 [Simulated IT Telemetry]",
+                "evaluation": f"{val_ms} ms latency is {status_desc} against normal threshold of < 30.0 ms."
+            })
+        except ValueError:
+            pass
+
+    # 3. CPU Utilization check (e.g. Incident 1: "CPU utilization exceeded 95% for 10 minutes")
+    cpu_match = re.search(r'cpu(?:\s*utilization|\s*usage)?.*?(\d+(?:\.\d+)?)\s*%|(\d+(?:\.\d+)?)\s*%\s*cpu', text_lower)
+    if cpu_match:
+        val_str = cpu_match.group(1) or cpu_match.group(2)
+        try:
+            val_pct = float(val_str)
+            is_abnormal = val_pct >= 75.0
+            is_critical = val_pct >= 85.0
+            status_desc = "ABNORMAL / CRITICAL" if is_critical else ("ELEVATED / WARNING" if is_abnormal else "NORMAL / HEALTHY")
+            signals.append({
+                "metric": "CPU Utilization",
+                "value": f"{val_pct}%",
+                "numeric_value": val_pct,
+                "unit": "%",
+                "threshold": "< 75.0% normal (abnormal: >= 85.0%)",
+                "status": status_desc,
+                "is_abnormal": is_abnormal,
+                "source": "Simulated Host Metric (Synthetic sample data; no live SNMP connected)",
+                "label": "🟣 [Simulated IT Telemetry]",
+                "evaluation": f"{val_pct}% CPU is {status_desc} against critical threshold of >= 85.0%."
+            })
+        except ValueError:
+            pass
+
+    # 4. Database Replication Lag check (e.g. Ticket 9: "Slave database is 45 minutes behind master", Incident 3: "5 minutes behind")
+    rep_match = re.search(r'(\d+)\s*(?:minutes?|mins?|seconds?|secs?)\s*(?:behind|lag)', text_lower)
+    if rep_match:
+        try:
+            val_int = int(rep_match.group(1))
+            is_mins = "min" in text_lower[rep_match.start():min(len(text_lower), rep_match.end()+15)]
+            lag_sec = val_int * 60 if is_mins else val_int
+            status_desc = "ABNORMAL / CRITICAL" if lag_sec >= 2.0 else "NORMAL / HEALTHY"
+            signals.append({
+                "metric": "Database Replication Lag",
+                "value": f"{val_int} {'minutes' if is_mins else 'seconds'}",
+                "numeric_value": lag_sec,
+                "unit": "seconds",
+                "threshold": "< 1.0s normal (abnormal: >= 2.0s)",
+                "status": status_desc,
+                "is_abnormal": lag_sec >= 2.0,
+                "source": "Simulated Replication Telemetry (Synthetic sample data; no live MySQL connected)",
+                "label": "🟣 [Simulated IT Telemetry]",
+                "evaluation": f"Replication lag of {val_int} {'minutes' if is_mins else 'seconds'} is {status_desc} against threshold of < 1.0s."
+            })
+        except ValueError:
+            pass
+
+    # 5. Storage / Hardware alerts
+    if "disk space" in text_lower or "out of disk" in text_lower:
+        signals.append({
+            "metric": "Storage / Disk Capacity",
+            "value": "Disk Space Exhausted / Critical",
+            "threshold": "< 80.0% utilization normal (abnormal >= 90.0%)",
+            "status": "ABNORMAL / CRITICAL",
+            "is_abnormal": True,
+            "source": "Simulated Storage Telemetry (Synthetic sample data)",
+            "label": "🟣 [Simulated IT Telemetry]",
+            "evaluation": "Storage exhaustion detected; exceeds normal capacity threshold."
+        })
+    if "backup failed" in text_lower or "backup failure" in text_lower:
+        signals.append({
+            "metric": "Database Backup Verification",
+            "value": "Backup Job Failed (Disk Space)",
+            "threshold": "Completed daily < 24h, SHA-256 Valid",
+            "status": "ABNORMAL / CRITICAL",
+            "is_abnormal": True,
+            "source": "Simulated Backup Catalog (Synthetic sample data)",
+            "label": "🟣 [Simulated IT Telemetry]",
+            "evaluation": "Backup failure alert; daily backup integrity verification failed."
+        })
+    if "fan failure" in text_lower or "fan module alarm" in text_lower:
+        signals.append({
+            "metric": "Hardware Environmental (Fan Module)",
+            "value": "Fan Module Alarm",
+            "threshold": "All fan modules operational, RPM within nominal range",
+            "status": "ABNORMAL / HARDWARE ALARM",
+            "is_abnormal": True,
+            "source": "Simulated Chassis Telemetry (Synthetic sample data; no live Cisco IOS-XE connected)",
+            "label": "🟣 [Simulated IT Telemetry]",
+            "evaluation": "Chassis fan module failure detected; risks thermal throttling."
+        })
+    if "crc error" in text_lower or "dropping packets" in text_lower:
+        signals.append({
+            "metric": "Physical Layer / Interface Drops",
+            "value": "Interface Dropping Packets / CRC Errors",
+            "threshold": "CRC Errors = 0, Drops = 0",
+            "status": "ABNORMAL / ELEVATED",
+            "is_abnormal": True,
+            "source": "Simulated Switch/Router Telemetry (Synthetic sample data)",
+            "label": "🟣 [Simulated IT Telemetry]",
+            "evaluation": "Packet drops or CRC frame errors detected on interface."
+        })
+
+    # Correlated system telemetry from telemetry_service if DB session provided
+    if db is not None:
+        try:
+            telem_data = telemetry_service.get_telemetry_metrics(db)
+            real_m = telem_data.get("real_metrics", {})
+            sim_m = telem_data.get("simulated_metrics", {})
+
+            # Real SQLite database query latency
+            db_ms = real_m.get("database_response_time_ms")
+            db_name = settings.DATABASE_URL.split('/')[-1] or "islm_recovered.db"
+            if db_ms is not None:
+                signals.append({
+                    "metric": f"SQLite {db_name} Query Latency",
+                    "value": f"{db_ms} ms",
+                    "numeric_value": db_ms,
+                    "unit": "ms",
+                    "threshold": real_m.get("database_response_time_threshold", "< 10.0 ms acceptable"),
+                    "status": "NORMAL / HEALTHY" if db_ms < 10.0 else "ELEVATED",
+                    "is_abnormal": db_ms >= 10.0,
+                    "source": f"Local Host Kernel & {db_name} SQLite Engine (SELECT 1)",
+                    "label": "🟢 [Real Host Telemetry]",
+                    "evaluation": f"Authoritative SQLite database round-trip query responded in {db_ms} ms."
+                })
+
+            # If network domain and no packet loss extracted from text yet, include simulated network probe
+            if ("network" in cat or "network" in service) and not any(s["metric"] == "Packet Loss" for s in signals):
+                pkt_sim = sim_m.get("packet_loss_pct")
+                if pkt_sim is not None:
+                    is_abn = pkt_sim >= 0.5
+                    signals.append({
+                        "metric": "Network Packet Loss (WAN Edge)",
+                        "value": f"{pkt_sim}%",
+                        "numeric_value": pkt_sim,
+                        "unit": "%",
+                        "threshold": "< 0.5% normal (elevated >= 0.5%, abnormal >= 1.0%)",
+                        "status": "ABNORMAL / ELEVATED" if is_abn else "NORMAL / HEALTHY",
+                        "is_abnormal": is_abn,
+                        "source": "Simulated ICMP Telemetry Probe (Synthetic sample data)",
+                        "label": "🟣 [Simulated IT Telemetry]",
+                        "evaluation": f"Simulated WAN edge probe reports {pkt_sim}% packet loss ({'ABNORMAL' if is_abn else 'NORMAL'})."
+                    })
+        except Exception as e:
+            logger.debug("Telemetry correlation in SLA enrichment skipped: %s", e)
+
+    return signals
+
+
+def _clean_and_dedup_hypotheses(raw_lines: List[str], default_text: str, is_resolved: bool, service: str, title: str) -> str:
+    """
+    Remove repetitive root causes, filter duplicate statements, and format as distinct hypotheses.
+    Guarantees unverified hypotheses are never presented as confirmed facts.
+    """
+    clean_items = []
+    seen_words = []
+    title_words = set(re.sub(r'[^a-zA-Z0-9\s]', '', title.lower()).split())
+    title_substantive = {w for w in title_words if len(w) > 3 and w not in ("with", "from", "that", "this", "high", "usage", "alert", "error", "issue")}
+
+    # Expand any lines that combine multiple numbered items
+    expanded_lines = []
+    for line in raw_lines:
+        parts = re.split(r'(?:^|\s+)(?:[1-4]\.|\•|\-|\*)\s+', line)
+        for p in parts:
+            p_clean = p.strip()
+            if p_clean:
+                expanded_lines.append(p_clean)
+    if not expanded_lines:
+        expanded_lines = raw_lines
+
+    for line in expanded_lines:
+        cleaned = re.sub(
+            r'^(?:[\d\.\-\*\•\)]+|hypothesis\s*\d*:?|root\s*cause\s*\d*:?|possible\s*cause\s*\d*:?)\s*',
+            '',
+            line.strip('*# -'),
+            flags=re.IGNORECASE
+        ).strip()
+        if not cleaned or len(cleaned) < 15:
+            continue
+        if any(h in cleaned.lower() for h in ("incident summary", "sla risk", "recommended", "supporting evidence", "uncertaint")):
+            continue
+
+        c_words = set(re.sub(r'[^a-zA-Z0-9\s]', '', cleaned.lower()).split())
+        # Drop only if it is essentially identical to the title
+        if title_substantive and len(c_words) > 3 and len(c_words & title_substantive) == len(c_words):
+            continue
+
+        # Check word overlap with previously accepted hypotheses
+        is_dup = False
+        for prev in seen_words:
+            overlap = len(c_words & prev) / max(len(c_words), 1)
+            if overlap > 0.65:
+                is_dup = True
+                break
+        if not is_dup:
+            seen_words.append(c_words)
+            clean_items.append(cleaned)
+        if len(clean_items) >= 3:
+            break
+
+    prefix = "[SLM Technical Hypothesis — Retrospective]:" if is_resolved else "[SLM Technical Hypothesis — Unverified]:"
+    if len(clean_items) >= 2:
+        bullets = "\n".join(f"• Hypothesis {i+1}: {item}" for i, item in enumerate(clean_items))
+        return f"{prefix}\n{bullets}"
+    elif len(clean_items) == 1:
+        return f"{prefix}\n• Hypothesis 1: {clean_items[0]}\n• Hypothesis 2: Secondary dependency bottleneck or resource exhaustion on {service} node."
+    else:
+        if is_resolved:
+            return (
+                f"{prefix}\n"
+                f"• Hypothesis 1: Transient query lock contention or worker thread pool saturation on {service}.\n"
+                f"• Hypothesis 2: Secondary dependency latency or memory fragmentation prior to resolution."
+            )
+        else:
+            return (
+                f"{prefix}\n"
+                f"• Hypothesis 1: Unindexed slow queries or lock contention driving CPU/memory consumption on {service}.\n"
+                f"• Hypothesis 2: Connection pool saturation or downstream dependency bottleneck on {service} node."
+            )
+
+
+def _clean_and_ground_action_plan(
+    raw_lines: List[str],
+    runbook: dict,
+    is_resolved: bool,
+    entity: str,
+    item_id: str,
+    title: str,
+    service: str,
+    affected_comp: str
+) -> str:
+    """
+    Synthesize incident-specific troubleshooting or post-resolution steps grounded in the domain runbook.
+    Explicitly marks actions as human-advisory and non-autonomous.
+    """
+    prefix = "[Human Engineer Advisory — Post-Resolution]:" if is_resolved else "[Human Engineer Advisory]:"
+    cleaned_steps = []
+
+    for line in raw_lines:
+        cleaned = re.sub(
+            r'^(?:[\d\.\-\*\•\)]+|action\s*\d*:?|step\s*\d*:?|procedure\s*\d*:?)\s*',
+            '',
+            line.strip('*# -'),
+            flags=re.IGNORECASE
+        ).strip()
+        if not cleaned or len(cleaned) < 15:
+            continue
+        if any(h in cleaned.lower() for h in ("incident summary", "sla risk", "possible root", "supporting evidence", "uncertaint")):
+            continue
+        if is_resolved:
+            for bp in [r"breach\s+imminent", r"immediate\s+intervention\s+required", r"escalat(?:e|ing)\s+immediately", r"urgent\s+intervention"]:
+                cleaned = re.sub(bp, "post-incident review", cleaned, flags=re.IGNORECASE)
+        cleaned_steps.append(cleaned)
+        if len(cleaned_steps) >= 3:
+            break
+
+    if len(cleaned_steps) >= 2:
+        formatted = "\n".join(f"{i+1}. {step}" for i, step in enumerate(cleaned_steps))
+    else:
+        if is_resolved:
+            formatted = (
+                f"1. Conduct formal Post-Incident Review (PIR) for {item_id} to document root causes and recovery timeline.\n"
+                f"2. Calibrate monitoring alert thresholds in {runbook['runbook_id']} ({runbook['domain']}) to detect conditions earlier.\n"
+                f"3. Verify post-resolution stability across adjacent {service} components and confirm zero recurrence in telemetry."
+            )
+        else:
+            checks = runbook.get("diagnostic_checks", [])
+            procs = runbook.get("remediation_procedures", [])
+            c0 = checks[0] if checks else "Inspect service error logs and connection metrics"
+            p0 = procs[0] if procs else "Execute service remediation procedure"
+            p1 = procs[1] if len(procs) > 1 else (checks[1] if len(checks) > 1 else "Verify recovery post-intervention")
+            formatted = (
+                f"1. {c0}\n"
+                f"2. {p0}\n"
+                f"3. {p1}"
+            )
+
+    disclaimer = (
+        "\n(All post-resolution actions require human engineer authorization. The SLM does not perform operational changes.)"
+        if is_resolved else
+        "\n(Requires human engineer verification and authorization before execution. The SLM does not perform operational changes.)"
+    )
+    return f"{prefix}\n{formatted}{disclaimer}"
+
+
+async def enrich_with_ai_prediction(item_risk: dict, db: Optional[Session] = None) -> dict:
     """
     Enrich an item with DeepSeek-R1 1.5B qualitative root cause prediction, SLA risk explanation,
     and recommended troubleshooting steps, augmented by domain RAG runbook knowledge.
-    Strictly distinguishes AI-generated suggestions from verified system data.
+    Strictly distinguishes AI-generated suggestions from verified system data and adapts to resolved states.
     """
     entity = item_risk.get("entity_type", "ticket")
     item_id = item_risk.get("entity_id") or f"#{item_risk.get('id')}"
@@ -883,59 +1220,176 @@ async def enrich_with_ai_prediction(item_risk: dict) -> dict:
     description = item_risk.get("description", "")
     category = item_risk.get("category", "")
     affected_component = item_risk.get("affected_component", "")
-    priority = item_risk.get("priority", "medium")
+    priority = (item_risk.get("priority") or "medium").strip().lower()
     service = item_risk.get("service_name", "General")
-    elapsed_p = item_risk.get("percent_elapsed", 0)
-    risk_lvl = item_risk.get("risk_level", "Medium")
-    assigned = item_risk.get("assigned_to", "Unassigned")
-    status = item_risk.get("status", "open")
+    elapsed_p = float(item_risk.get("percent_elapsed", 0.0))
+    elapsed_m = int(item_risk.get("elapsed_minutes", 0))
+    remaining_m = int(item_risk.get("remaining_minutes", 0))
     target_name = item_risk.get("target_name", "SLA Target")
-    remaining_m = item_risk.get("remaining_minutes", 0)
-    reason = item_risk.get("reason", "")
+    target_display = item_risk.get("target_display", "")
+    target_minutes = int(item_risk.get("target_minutes", 0))
+    is_breached = bool(item_risk.get("is_breached", False))
+    status = (item_risk.get("status") or "open").strip().lower()
+    is_resolved = status in ("resolved", "closed")
+    assigned = item_risk.get("assigned_to", "Unassigned")
+    evaluated_at = item_risk.get("evaluated_at") or datetime.now(timezone.utc).isoformat()
 
-    # Retrieve domain troubleshooting knowledge via RAG
+    # Retrieve domain troubleshooting knowledge via Domain Runbook Matcher
     runbook = retrieve_troubleshooting_knowledge(item_risk)
+    runbook_checks_str = "\n".join(f"  - {c}" for c in runbook.get("diagnostic_checks", []))
+    runbook_procedures_str = "\n".join(f"  - {p}" for p in runbook.get("remediation_procedures", []))
 
-    prompt = (
-        f"Analyze this {entity} record from an enterprise IT monitoring system:\n"
-        f"ID: {item_id} | Title: {title}\n"
-        f"Description: {description or 'Infrastructure alert triggered.'}\n"
-        f"Service: {service} | Category: {category} | Component: {affected_component or 'Primary'}\n"
-        f"Severity: {priority.upper()} | Status: {status} | Assignee: {assigned}\n"
-        f"SLA: {elapsed_p}% of {target_name} consumed, {remaining_m}m remaining\n"
-        f"Assessment: {reason}\n"
-        f"Runbook: {runbook['runbook_id']} ({runbook['domain']})\n"
-        f"Key checks: {runbook['diagnostic_checks'][0]}\n\n"
-        f"Respond with exactly these 6 labeled sections (no preamble, no repetition):\n"
-        f"Incident Summary: <1-2 sentence technical summary specific to this {entity}>\n"
-        f"Possible Root Causes: <2-3 specific technical hypotheses based on title, service, and telemetry>\n"
-        f"SLA Risk Explanation: <how current {elapsed_p}% consumption affects operational SLA and business impact>\n"
-        f"Recommended Troubleshooting Steps: <3 concrete diagnostic commands or actions from runbook>\n"
-        f"Supporting Evidence: <specific observed signals from database record and telemetry>\n"
-        f"Uncertainties or Missing Information: <what additional data would confirm or rule out hypotheses>"
-    )
+    # Extract & validate telemetry signals against configured thresholds
+    telemetry_signals = extract_and_validate_telemetry(item_risk, db=db)
+    telemetry_summary_lines = []
+    for s in telemetry_signals:
+        telemetry_summary_lines.append(
+            f"- {s['metric']}: {s['value']} {s['label']} -> {s['status']} (Threshold: {s['threshold']}). {s['evaluation']}"
+        )
+    telemetry_summary = "\n".join(telemetry_summary_lines) if telemetry_summary_lines else "- Baseline system telemetry within standard operating parameters."
 
-    system_prompt = (
-        "You are a senior IT Site Reliability Engineer. "
-        "Provide precise, technical analysis grounded in the incident data provided. "
-        "Do NOT repeat the input data verbatim. Do NOT use filler phrases like 'Based on the information provided'. "
-        "Each section must contain unique technical content. Be specific to the service and component involved."
-    )
+    # Baseline verified facts from SQLite and active telemetry
+    if is_resolved:
+        default_summary = (
+            f"Resolved {priority.capitalize()}-severity {entity} {item_id} affecting {service} "
+            f"was completed in {elapsed_m}m ({status.upper()})."
+        )
+        default_hypothesis = (
+            f"[SLM Technical Hypothesis — Retrospective]: Analysis indicates {service} ({category}) issue "
+            f"resolved via standard operational remediation. Underlying telemetry stabilized post-closure."
+        )
+        default_risk_explanation = (
+            f"Historical SLA Outcome: Resolved in {elapsed_m}m against {target_display} {target_name} ({elapsed_p}% elapsed). "
+            + (f"Exceeded SLA target duration by {max(0, elapsed_m - target_minutes)}m." if is_breached
+               else "Successfully met SLA target.")
+            + " The record is closed; no active SLA risk exists. Historical delay factors should be documented in post-incident review."
+        )
+        default_action_plan = (
+            f"[Human Engineer Advisory — Post-Resolution]:\n"
+            f"1. Conduct formal Post-Incident Review (PIR) to document root causes and timeline.\n"
+            f"2. Review and calibrate alert thresholds in {runbook['runbook_id']} to detect conditions earlier.\n"
+            f"3. Verify persistent telemetry stability across adjacent service nodes. "
+            f"All post-resolution actions require human engineer verification. The SLM does not perform operational changes."
+        )
+        default_evidence = (
+            f"Verified SQLite Record: {item_id} [{category}], Priority: {priority.upper()}, Status: {status.upper()}.\n"
+            f"Resolution Duration: {elapsed_m}m ({elapsed_p}% of {target_display} {target_name}). Historical SLA Outcome: {'Exceeded SLA' if is_breached else 'Met SLA'}.\n"
+            f"Correlated SRE Runbook: {runbook['runbook_id']} ({runbook['domain']}).\n"
+            f"Telemetry Signals: {'; '.join(s['metric'] + ' ' + s['value'] + ' (' + s['status'] + ')' for s in telemetry_signals) if telemetry_signals else 'Baseline normal'}."
+        )
+        default_uncertainties = (
+            "Historical interface queue states and ephemeral syslog buffers from the incident onset are archived; "
+            "retrospective multi-log correlation is needed to verify if secondary environmental factors contributed."
+        )
 
-    # Base verified facts from SQLite and active telemetry
-    default_summary = f"{priority.capitalize()}-severity {entity} {item_id} affecting {service} ({status.upper()})."
-    default_evidence = (
-        f"Verified SQLite Record: {item_id} [{category}], Priority: {priority.upper()}, Status: {status}. "
-        f"Telemetry: {elapsed_p}% elapsed ({remaining_m}m remaining of {target_name}). "
-        f"SRE Runbook: {runbook['runbook_id']} ({runbook['domain']})."
-    )
-    default_uncertainties = (
-        f"Detailed packet captures, switch backplane interface buffer metrics, "
-        f"and remote host syslog entries are not directly connected in this telemetry tier."
-    )
+        prompt = (
+            f"You are an expert IT Site Reliability Engineer conducting a historical Post-Incident Review (PIR).\n"
+            f"CRITICAL: This {entity} record is RESOLVED and CLOSED.\n"
+            f"- Do NOT generate active breach warnings, imminent breach alerts, or urgent triage requests.\n"
+            f"- Analyze the historical outcome objectively and recommend post-resolution recurrence prevention actions.\n\n"
+            f"Authoritative SQLite Record (Ground Truth):\n"
+            f"- Record: {entity.upper()} {item_id} | Title: {title}\n"
+            f"- Service: {service} | Category: {category} | Component: {affected_component or 'Primary'}\n"
+            f"- Severity: {priority.upper()} | Status: {status.upper()} | Assignee: {assigned}\n"
+            f"- SLA Target: {target_display} ({target_name}, target duration: {target_minutes}m)\n"
+            f"- Historical Resolution Duration: {elapsed_m}m ({elapsed_p}% of target consumed)\n"
+            f"- SLA Outcome: {'SLA Target Exceeded by ' + str(max(0, elapsed_m - target_minutes)) + 'm' if is_breached else 'Resolved within SLA target'}\n\n"
+            f"Observed Telemetry Signals & Configured Threshold Checks:\n"
+            f"{telemetry_summary}\n\n"
+            f"Correlated SRE Runbook:\n"
+            f"- Runbook ID: {runbook['runbook_id']} ({runbook['domain']})\n"
+            f"- Diagnostic Checks:\n{runbook_checks_str}\n"
+            f"- Remediation Procedures:\n{runbook_procedures_str}\n\n"
+            f"Respond with exactly these 6 labeled sections (no preamble, no repetition):\n"
+            f"Incident Summary: <1-2 sentence post-incident technical summary for resolved {entity} {item_id}>\n"
+            f"Possible Root Causes: <2-3 distinct technical mechanisms that contributed to the incident; do NOT repeat the title; qualify explicitly as unverified retrospective hypotheses>\n"
+            f"SLA Risk Explanation: <Historical SLA explanation: explain that resolution took {elapsed_m}m ({elapsed_p}% of {target_display} {target_name}), stating whether SLA was met or exceeded. Do NOT state breach imminent or intervention required>\n"
+            f"Recommended Troubleshooting Steps: <3 concrete post-resolution actions grounded in the runbook procedures above: PIR, runbook updates, and recurrence prevention; note they require human authorization>\n"
+            f"Supporting Evidence: <verified closure duration from SQLite record, historical telemetry signals with simulated labels, and runbook reference>\n"
+            f"Uncertainties or Missing Information: <retrospective telemetry gaps or post-incident data needed to prevent recurrence>"
+        )
+
+        system_prompt = (
+            "You are a senior IT Site Reliability Engineer conducting a historical Post-Incident Review (PIR) for a RESOLVED record. "
+            "Analyze the historical outcome objectively based on the verified closure data. "
+            "Do NOT issue active breach alerts or immediate intervention calls. "
+            "Provide post-incident root cause hypotheses and recurrence prevention recommendations requiring human verification."
+        )
+
+    else:
+        # Active record
+        default_summary = f"{priority.capitalize()}-severity {entity} {item_id} affecting {service} ({status.upper()})."
+        default_hypothesis = (
+            f"[SLM Technical Hypothesis — Unverified]: Potential operational degradation in {service} ({category}) — "
+            f"{title.lower()} requires technician diagnostic verification on target components."
+        )
+        default_risk_explanation = (
+            f"SLA status: {elapsed_p}% elapsed ({elapsed_m}m of {target_display} {target_name}). "
+            + (f"SLA deadline breached by {max(0, elapsed_m - target_minutes)}m. Current operational status is '{status}'." if is_breached
+               else f"Imminent breach: only {remaining_m}m remaining before breach." if elapsed_p >= 90.0
+               else f"Elevated SLA risk: {remaining_m}m remaining." if elapsed_p >= 70.0
+               else f"Within acceptable operational thresholds: {remaining_m}m remaining.")
+        )
+        default_action_plan = (
+            f"[Human Engineer Advisory]:\n"
+            f"1. {runbook['diagnostic_checks'][0]}.\n"
+            f"2. {runbook['remediation_procedures'][0]}.\n"
+            f"3. All remediation actions require human engineer verification and authorization before execution. "
+            f"The SLM does not perform operational changes."
+        )
+        default_evidence = (
+            f"Verified SQLite Record: {item_id} [{category}], Priority: {priority.upper()}, Status: {status.upper()}.\n"
+            f"Authoritative SLA Metrics: {elapsed_m}m elapsed ({elapsed_p}%) of {target_display} {target_name}, {remaining_m}m remaining.\n"
+            f"Correlated SRE Runbook: {runbook['runbook_id']} ({runbook['domain']}).\n"
+            f"Telemetry Signals: {'; '.join(s['metric'] + ' ' + s['value'] + ' (' + s['status'] + ')' for s in telemetry_signals) if telemetry_signals else 'Baseline normal'}."
+        )
+        default_uncertainties = (
+            "Detailed packet captures, switch backplane interface buffer metrics, "
+            "and remote host syslog entries are not directly connected in this telemetry tier."
+        )
+
+        prompt = (
+            f"You are an expert IT Site Reliability Engineer.\n"
+            f"Analyze this active {entity} record from an enterprise IT monitoring system.\n"
+            f"CRITICAL REQUIREMENTS:\n"
+            f"- Ground all facts strictly in the verified SQLite record below.\n"
+            f"- Every percentage, elapsed time, and remaining time statement MUST match the Authoritative SQLite Record ({elapsed_p}%, {elapsed_m}m elapsed, {remaining_m}m remaining of {target_display} {target_name}).\n"
+            f"- Validate observed telemetry against configured thresholds; specifically identify any values exceeding configured thresholds (e.g. 2% packet loss is abnormal compared to the < 0.5% threshold).\n"
+            f"- Clearly label root cause mechanisms as unverified technical hypotheses.\n"
+            f"- State recommended steps as advisory actions requiring human engineer authorization before execution. The SLM does not perform operational changes.\n\n"
+            f"Authoritative SQLite Record (Ground Truth):\n"
+            f"- Record: {entity.upper()} {item_id} | Title: {title}\n"
+            f"- Description: {description or 'Infrastructure alert triggered.'}\n"
+            f"- Service: {service} | Category: {category} | Component: {affected_component or 'Primary'}\n"
+            f"- Severity: {priority.upper()} | Status: {status.upper()} | Assignee: {assigned}\n"
+            f"- SLA Target: {target_display} ({target_name}, target duration: {target_minutes}m)\n"
+            f"- Elapsed Time: {elapsed_m}m ({elapsed_p}% consumed)\n"
+            f"- Remaining Margin: {remaining_m}m\n"
+            f"- Breach Status: {'BREACHED' if is_breached else 'IN PROGRESS / COMPLIANT'}\n\n"
+            f"Observed Telemetry Signals & Configured Threshold Checks:\n"
+            f"{telemetry_summary}\n\n"
+            f"Correlated SRE Runbook:\n"
+            f"- Runbook ID: {runbook['runbook_id']} ({runbook['domain']})\n"
+            f"- Diagnostic Checks:\n{runbook_checks_str}\n"
+            f"- Remediation Procedures:\n{runbook_procedures_str}\n\n"
+            f"Respond with exactly these 6 labeled sections (no preamble, no repetition):\n"
+            f"Incident Summary: <1-2 sentence technical summary specific to active {entity} {item_id}>\n"
+            f"Possible Root Causes: <2-3 distinct technical hypotheses explaining potential failure mechanisms; do NOT repeat the title; qualify explicitly as unverified hypotheses>\n"
+            f"SLA Risk Explanation: <Explain SLA status strictly using {elapsed_p}% elapsed, {remaining_m}m remaining of {target_display} {target_name}. If breached or imminent, state operational impact>\n"
+            f"Recommended Troubleshooting Steps: <3 concrete diagnostic checks or remediation actions directly grounded in the runbook procedures above; note they require human verification>\n"
+            f"Supporting Evidence: <specific observed signals from SQLite record and telemetry with simulated/real labels>\n"
+            f"Uncertainties or Missing Information: <what additional diagnostic data would confirm or rule out hypotheses>"
+        )
+
+        system_prompt = (
+            "You are a senior IT Site Reliability Engineer. Ground your technical assessment strictly in the provided SQLite data and telemetry. "
+            "Differentiate verified facts from probabilistic hypotheses. Identify all telemetry values exceeding configured thresholds "
+            "(e.g. 2% packet loss is abnormal compared to < 0.5%). State all recommendations as advisory steps requiring human verification "
+            "before execution. The SLM does not perform operational actions."
+        )
 
     try:
-        raw_response = await llm_service.call_llm(prompt, system_prompt=system_prompt, max_tokens=600)
+        raw_response = await llm_service.call_llm(prompt, system_prompt=system_prompt, max_tokens=650)
         lines = [l.strip() for l in raw_response.split("\n") if l.strip()]
 
         section_buffers = {
@@ -961,12 +1415,12 @@ async def enrich_with_ai_prediction(item_risk: dict) -> dict:
                 val = clean_line.split(":", 1)[-1].strip("*# ").strip() if ":" in clean_line else ""
                 if val:
                     section_buffers["hypothesis"].append(val)
-            elif "sla risk" in lower or "risk explanation" in lower:
+            elif "sla risk" in lower or "risk explanation" in lower or "sla historical outcome" in lower:
                 current_section = "risk"
                 val = clean_line.split(":", 1)[-1].strip("*# ").strip() if ":" in clean_line else ""
                 if val:
                     section_buffers["risk"].append(val)
-            elif "recommended troubleshooting" in lower or "troubleshooting step" in lower or "action plan" in lower:
+            elif "recommended troubleshooting" in lower or "troubleshooting step" in lower or "action plan" in lower or "recommended post-resolution" in lower:
                 current_section = "action"
                 val = clean_line.split(":", 1)[-1].strip("*# ").strip() if ":" in clean_line else ""
                 if val:
@@ -991,7 +1445,6 @@ async def enrich_with_ai_prediction(item_risk: dict) -> dict:
             sentences = [s.strip() for s in text.replace(". ", ".\n").split("\n") if s.strip()]
             seen = []
             for s in sentences:
-                # Skip if >80% overlap with any already-seen sentence
                 is_dup = False
                 s_words = set(s.lower().split())
                 for prev in seen:
@@ -1004,23 +1457,93 @@ async def enrich_with_ai_prediction(item_risk: dict) -> dict:
             return " ".join(seen)
 
         summary = _dedup_section(" ".join(section_buffers["summary"]).strip()) or default_summary
-        hypothesis = _dedup_section(" ".join(section_buffers["hypothesis"]).strip())
-        risk_explanation = _dedup_section(" ".join(section_buffers["risk"]).strip())
-        action_plan = _dedup_section(" ".join(section_buffers["action"]).strip())
+        hypothesis = _clean_and_dedup_hypotheses(
+            section_buffers["hypothesis"],
+            default_hypothesis,
+            is_resolved,
+            service,
+            title
+        )
+        action_plan = _clean_and_ground_action_plan(
+            section_buffers["action"],
+            runbook,
+            is_resolved,
+            entity,
+            item_id,
+            title,
+            service,
+            affected_component
+        )
         evidence = _dedup_section(" ".join(section_buffers["evidence"]).strip()) or default_evidence
         uncertainties = _dedup_section(" ".join(section_buffers["uncertainties"]).strip()) or default_uncertainties
 
-        if not hypothesis:
-            hypothesis = f"Potential degradation in {service} service — {title.lower()} requires diagnostic investigation."
-        if not risk_explanation:
-            risk_explanation = (
-                f"SLA consumption at {elapsed_p}% with {remaining_m}m remaining. "
-                + ("Breach imminent — immediate intervention required." if elapsed_p >= 90
-                   else "Elevated risk — proactive monitoring advised." if elapsed_p >= 70
-                   else "Within acceptable threshold — continue standard handling.")
+        # Construct exact Authoritative SLA Fact from SQLite ground truth
+        if is_resolved:
+            authoritative_sla_fact = (
+                f"Historical SLA Record: Completed in {elapsed_m}m ({elapsed_p}% of {target_display} {target_name}). "
+                f"Outcome: {'Exceeded SLA Target' if is_breached else 'Met SLA Target'}. Reference Time: {evaluated_at}."
             )
-        if not action_plan:
-            action_plan = "; ".join(runbook["remediation_procedures"][:2])
+        else:
+            authoritative_sla_fact = (
+                f"Authoritative SLA Status: {elapsed_p}% elapsed ({elapsed_m}m consumed of {target_display} {target_name}). "
+                f"{'BREACHED by ' + str(max(0, elapsed_m - target_minutes)) + 'm' if is_breached else str(remaining_m) + 'm remaining'}. "
+                f"Status: {status.upper()}. Reference Time: {evaluated_at}."
+            )
+
+        authoritative_metrics = {
+            "percent_elapsed": elapsed_p,
+            "elapsed_minutes": elapsed_m,
+            "remaining_minutes": remaining_m,
+            "target_minutes": target_minutes,
+            "target_name": target_name,
+            "target_display": target_display,
+            "is_breached": is_breached,
+            "status": status,
+            "evaluated_at": evaluated_at,
+        }
+
+        domain_runbook_context = {
+            "runbook_id": runbook["runbook_id"],
+            "domain": runbook["domain"],
+            "diagnostic_checks": runbook["diagnostic_checks"],
+            "remediation_procedures": runbook["remediation_procedures"],
+            "verified_source": runbook["verified_source"],
+        }
+
+        # SLA Risk Explanation Consistency Enforcement:
+        # Scrub LLM hallucinated percentage numbers, conflicting breach claims, and active alerts for resolved items
+        raw_risk_text = " ".join(section_buffers["risk"]).strip()
+        if is_resolved:
+            cleaned_risk = raw_risk_text
+            for bp in [r"breach\s+imminent", r"immediate\s+intervention\s+required", r"escalat(?:e|ing)\s+immediately", r"active\s+breach"]:
+                cleaned_risk = re.sub(bp, "historical SLA completion", cleaned_risk, flags=re.IGNORECASE)
+            if is_breached:
+                # Scrub contradictory claims like "meeting the acceptable range" or "SLA was met"
+                cleaned_risk = re.sub(
+                    r'\b(?:meeting\s+the\s+acceptable\s+range|sla\s+was\s+met|met\s+(?:the\s+)?sla|within\s+(?:the\s+)?sla|sla\s+compliant)\b',
+                    'exceeded the SLA target duration',
+                    cleaned_risk,
+                    flags=re.IGNORECASE
+                )
+            else:
+                cleaned_risk = re.sub(r'\b(?:breached|exceeded\s+sla)\b', 'met SLA target', cleaned_risk, flags=re.IGNORECASE)
+            cleaned_risk = _dedup_section(cleaned_risk)
+            risk_explanation = (
+                f"{authoritative_sla_fact} {cleaned_risk}"
+                if cleaned_risk else
+                f"{authoritative_sla_fact} Record is closed; no active SLA risk exists. Historical delay factors should be documented in post-incident review."
+            )
+        else:
+            cleaned_risk = _dedup_section(raw_risk_text)
+            if is_breached:
+                cleaned_risk = re.sub(r'\b(?:within\s+sla|no\s+risk|healthy\s+sla)\b', 'deadline breached', cleaned_risk, flags=re.IGNORECASE)
+            risk_explanation = f"{authoritative_sla_fact} {cleaned_risk}" if cleaned_risk else authoritative_sla_fact
+
+        # Supporting Evidence: append authoritative telemetry signals with threshold status
+        if telemetry_signals and not any(s["metric"] in evidence for s in telemetry_signals):
+            evidence += " | Telemetry Signals: " + "; ".join(
+                f"{s['metric']}: {s['value']} {s['label']} [{s['status']}]" for s in telemetry_signals
+            )
 
         item_risk["ml_prediction"] = {
             "model_name": "deepseek-r1:1.5b",
@@ -1028,54 +1551,81 @@ async def enrich_with_ai_prediction(item_risk: dict) -> dict:
             "provider": "Ollama local inference",
             "prediction_type": "structured_qualitative_synthesis",
             "is_ai_generated": True,
-            # 6 Task-specified structured fields
+            "is_resolved": is_resolved,
+            "authoritative_sla_fact": authoritative_sla_fact,
+            "authoritative_metrics": authoritative_metrics,
             "incident_summary": summary,
             "possible_root_causes": hypothesis,
             "sla_risk_explanation": risk_explanation,
             "recommended_troubleshooting_steps": action_plan,
             "supporting_evidence": evidence,
             "uncertainties_or_missing_info": uncertainties,
-            # Backward compatibility fields
+            "telemetry_signals": telemetry_signals,
             "ai_root_cause_analysis": hypothesis,
             "ai_sla_risk_explanation": risk_explanation,
             "ai_recommended_action": action_plan,
-            "risk_trajectory": "Escalating" if elapsed_p >= 70 else ("Stable" if elapsed_p < 40 else "Monitor"),
-            "rag_knowledge_context": {
-                "runbook_id": runbook["runbook_id"],
-                "domain": runbook["domain"],
-                "diagnostic_checks": runbook["diagnostic_checks"],
-                "remediation_procedures": runbook["remediation_procedures"],
-                "verified_source": runbook["verified_source"],
-            },
-            "evaluated_at": datetime.now(timezone.utc).isoformat(),
+            "risk_trajectory": "Resolved" if is_resolved else ("Escalating" if elapsed_p >= 70 else ("Stable" if elapsed_p < 40 else "Monitor")),
+            "domain_runbook_context": domain_runbook_context,
+            "rag_knowledge_context": domain_runbook_context,
+            "evaluated_at": evaluated_at,
         }
         item_risk["detection_mode"] = "rule_based + deepseek_r1_synthesis"
+
     except Exception as e:
-        logger.warning("DeepSeek-R1 qualitative synthesis failed: %s", e)
+        logger.warning("DeepSeek-R1 qualitative synthesis fallback activated: %s", e)
+        if is_resolved:
+            authoritative_sla_fact = (
+                f"Historical SLA Record: Completed in {elapsed_m}m ({elapsed_p}% of {target_display} {target_name}). "
+                f"Outcome: {'Exceeded SLA Target' if is_breached else 'Met SLA Target'}. Reference Time: {evaluated_at}."
+            )
+        else:
+            authoritative_sla_fact = (
+                f"Authoritative SLA Status: {elapsed_p}% elapsed ({elapsed_m}m consumed of {target_display} {target_name}). "
+                f"{'BREACHED by ' + str(max(0, elapsed_m - target_minutes)) + 'm' if is_breached else str(remaining_m) + 'm remaining'}. "
+                f"Status: {status.upper()}. Reference Time: {evaluated_at}."
+            )
+
+        fallback_domain_context = {
+            "runbook_id": runbook["runbook_id"],
+            "domain": runbook["domain"],
+            "diagnostic_checks": runbook["diagnostic_checks"],
+            "remediation_procedures": runbook["remediation_procedures"],
+            "verified_source": runbook["verified_source"],
+        }
         item_risk["ml_prediction"] = {
             "model_name": "deepseek-r1:1.5b",
             "runtime": "ollama",
             "provider": "Ollama local inference",
             "status": "unavailable",
             "is_ai_generated": True,
+            "is_resolved": is_resolved,
             "error": str(e),
+            "authoritative_sla_fact": authoritative_sla_fact,
+            "authoritative_metrics": {
+                "percent_elapsed": elapsed_p,
+                "elapsed_minutes": elapsed_m,
+                "remaining_minutes": remaining_m,
+                "target_minutes": target_minutes,
+                "target_name": target_name,
+                "target_display": target_display,
+                "is_breached": is_breached,
+                "status": status,
+                "evaluated_at": evaluated_at,
+            },
             "incident_summary": default_summary,
-            "possible_root_causes": f"Automatic inference unavailable ({e}). Check service logs for {service}.",
-            "sla_risk_explanation": f"SLA consumed is {elapsed_p}%. Manual technician evaluation required.",
-            "recommended_troubleshooting_steps": f"Consult {runbook['runbook_id']} for manual remediation steps.",
+            "possible_root_causes": default_hypothesis,
+            "sla_risk_explanation": default_risk_explanation,
+            "recommended_troubleshooting_steps": default_action_plan,
             "supporting_evidence": default_evidence,
             "uncertainties_or_missing_info": default_uncertainties,
-            "ai_root_cause_analysis": f"Hypothesis unavailable due to inference timeout: {e}",
-            "ai_sla_risk_explanation": f"SLA consumed: {elapsed_p}%.",
-            "ai_recommended_action": item_risk.get("recommended_action", "Proceed with standard triage."),
-            "risk_trajectory": "Monitor",
-            "rag_knowledge_context": {
-                "runbook_id": runbook["runbook_id"],
-                "domain": runbook["domain"],
-                "diagnostic_checks": runbook["diagnostic_checks"],
-                "remediation_procedures": runbook["remediation_procedures"],
-                "verified_source": runbook["verified_source"],
-            },
+            "telemetry_signals": telemetry_signals,
+            "ai_root_cause_analysis": default_hypothesis,
+            "ai_sla_risk_explanation": default_risk_explanation,
+            "ai_recommended_action": default_action_plan,
+            "risk_trajectory": "Resolved" if is_resolved else "Monitor",
+            "domain_runbook_context": fallback_domain_context,
+            "rag_knowledge_context": fallback_domain_context,
+            "evaluated_at": evaluated_at,
         }
 
     return item_risk
@@ -1228,8 +1778,8 @@ def get_all_sla_risks(
             except ValueError:
                 ref_time = None
 
-    if ref_time is None:
-        ensure_sample_telemetry_anchored(db)
+    ref_dt = ref_time if isinstance(ref_time, datetime) else None
+    ensure_sample_telemetry_anchored(db, ref_time=ref_dt)
 
     results: List[dict] = []
 
@@ -1305,8 +1855,12 @@ def get_sla_dashboard_metrics(db: Session, ref_time: Optional[Union[datetime, st
             except ValueError:
                 ref_time = None
 
-    active_risks = get_all_sla_risks(db, include_resolved=False, ref_time=ref_time)
-    all_items = get_all_sla_risks(db, include_resolved=True, ref_time=ref_time)
+    eval_time = ref_time or datetime.now(timezone.utc)
+    if isinstance(eval_time, datetime) and eval_time.tzinfo is None:
+        eval_time = eval_time.replace(tzinfo=timezone.utc)
+
+    active_risks = get_all_sla_risks(db, include_resolved=False, ref_time=eval_time)
+    all_items = get_all_sla_risks(db, include_resolved=True, ref_time=eval_time)
 
     total_monitored = len(active_risks)
     breached_count = sum(1 for r in active_risks if r["is_breached"])

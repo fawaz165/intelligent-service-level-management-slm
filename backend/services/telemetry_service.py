@@ -35,23 +35,15 @@ def _measure_db_response_time(db: Session) -> Optional[float]:
 
 
 def _measure_loopback_latency(port: int = 8000) -> float:
-    """Measure real TCP connect latency to localhost."""
+    """Measure real TCP connect latency to localhost with fast fallback."""
     start = time.perf_counter()
     try:
-        with socket.create_connection(("127.0.0.1", port), timeout=0.5):
+        with socket.create_connection(("127.0.0.1", port), timeout=0.1):
             pass
         return round((time.perf_counter() - start) * 1000.0, 2)
     except Exception:
-        # Fallback to local socket pair ping if port 8000 isn't accepting direct probe
-        try:
-            s1, s2 = socket.socketpair()
-            s1.send(b"ping")
-            s2.recv(4)
-            s1.close()
-            s2.close()
-            return round((time.perf_counter() - start) * 1000.0, 2)
-        except Exception:
-            return 0.15
+        # Fast fallback when loopback probe is not accepting or in isolated environment
+        return 0.15
 
 
 def get_telemetry_metrics(db: Session) -> Dict[str, Any]:
@@ -103,6 +95,7 @@ def get_telemetry_metrics(db: Session) -> Dict[str, Any]:
 
     # SQLite file telemetry
     db_file_path = settings.DATABASE_URL.replace("sqlite:///", "")
+    db_filename = os.path.basename(db_file_path) if db_file_path else "islm_recovered.db"
     db_size_kb = 0.0
     try:
         if os.path.exists(db_file_path):
@@ -119,10 +112,10 @@ def get_telemetry_metrics(db: Session) -> Dict[str, Any]:
         "last_updated": timestamp_str,
         "is_simulated": False,
         "is_stale": is_stale,
-        "source": "Local Host Kernel & islm.db Engine",
+        "source": f"Local Host Kernel & {db_filename} Engine",
         "database_response_time_ms": db_latency_ms,
         "database_response_time_unit": "ms",
-        "database_response_time_source": "SQLite islm.db Kernel (SELECT 1)",
+        "database_response_time_source": f"SQLite {db_filename} Kernel (SELECT 1)",
         "database_response_time_threshold": "< 10.0 ms acceptable (abnormal: >= 25.0 ms)",
         "database_response_time_status": db_status,
         "database_availability": db_availability,
@@ -238,13 +231,13 @@ def get_telemetry_metrics(db: Session) -> Dict[str, Any]:
         "source": "Simulated Enterprise IT Infrastructure (Correlated with SQLite records)",
         "network_latency_ms": net_latency,
         "network_latency_unit": "ms",
-        "network_latency_source": "WAN Edge Gateway R101 (Simulated)",
+        "network_latency_source": "Simulated WAN Gateway Probe (Synthetic)",
         "network_latency_threshold": "< 30.0 ms normal (abnormal: >= 50.0 ms)",
         "network_latency_status": net_latency_status,
         "packet_loss_pct": packet_loss,
         "packet_loss_unit": "%",
-        "packet_loss_source": "ICMP Probe (Simulated)",
-        "packet_loss_threshold": "< 0.5% normal (abnormal: >= 1.0%)",
+        "packet_loss_source": "Simulated ICMP Telemetry Probe (Synthetic)",
+        "packet_loss_threshold": "< 0.5% normal (elevated: >= 0.5%, abnormal: >= 1.0%)",
         "packet_loss_status": packet_loss_status,
         "router_r101": {
             "device": "Router R101 (Core Edge Gateway)",
@@ -259,7 +252,7 @@ def get_telemetry_metrics(db: Session) -> Dict[str, Any]:
             "throughput_unit": "Mbps",
             "threshold": "Utilization < 75%, Drops = 0",
             "abnormal_condition": "Interface alert / Drops > 0",
-            "source": "SNMP Trap Agent (Simulated)",
+            "source": "Simulated Router Model (Synthetic sample data; no live SNMP connected)",
         },
         "switch_sw05": {
             "device": "Switch SW-05 (Distribution Stack)",
@@ -273,11 +266,11 @@ def get_telemetry_metrics(db: Session) -> Dict[str, Any]:
             "vlan_count": 8,
             "threshold": "CRC Errors = 0, Ports Active >= 40",
             "abnormal_condition": "CRC Frame Errors or Port flap",
-            "source": "Cisco IOS-XE Telemetry (Simulated)",
+            "source": "Simulated Switch Model (Synthetic sample data; no live Cisco IOS-XE connected)",
         },
         "database_replication_lag_sec": replication_lag,
         "replication_lag_unit": "seconds",
-        "replication_lag_source": "MySQL binlog sync (Simulated)",
+        "replication_lag_source": "Simulated Replication Telemetry (Synthetic sample data; no live MySQL connected)",
         "replication_lag_threshold": "< 1.0s normal (abnormal: >= 2.0s)",
         "replication_lag_status": replication_status,
         "database_buffer_hit_pct": buffer_pool_hit,
@@ -291,7 +284,7 @@ def get_telemetry_metrics(db: Session) -> Dict[str, Any]:
             "retention_days": 30,
             "threshold": "Completed daily < 24h, SHA-256 Valid",
             "abnormal_condition": "Checksum mismatch or job failure",
-            "source": "Enterprise Backup Catalog (Simulated)",
+            "source": "Simulated Backup Catalog (Synthetic sample data)",
         },
     }
 
