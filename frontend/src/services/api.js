@@ -4,8 +4,8 @@
  * Uses Server-Sent Events (SSE) for chat responses to avoid long-hanging requests.
  */
 
-const API_BASE = '/api';
-
+const configuredApiBase = import.meta.env.VITE_API_BASE_URL || '';
+const API_BASE = `${configuredApiBase.replace(/\/+$/, '')}/api`;
 /**
  * Send a chat message via SSE streaming.
  * Calls `onStatus` for progress updates, and resolves with the final result.
